@@ -494,7 +494,7 @@ impl LoglineApp {
                     // Check if file was truncated (rotation)
                     if reader.offset() > reader.file_size() {
                         let _ = msg_tx.send(ReaderMessage::FileReset);
-                        reader.seek(0);
+                        reader.seek_with_line_count(0, 0);
                     }
 
                     match reader.read_new_lines() {

@@ -178,6 +178,7 @@ impl LogReader {
     }
 
     /// Seek to a specific byte offset
+    #[allow(dead_code)]
     pub fn seek(&mut self, offset: u64) {
         self.offset = offset;
     }

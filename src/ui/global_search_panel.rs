@@ -364,10 +364,10 @@ impl GlobalSearchPanel {
             Color32::TRANSPARENT
         };
 
-        egui::Frame::none()
+        egui::Frame::new()
             .fill(bg_color)
             .inner_margin(4.0)
-            .rounding(2.0)
+            .corner_radius(2.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 

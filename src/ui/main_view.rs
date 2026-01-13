@@ -6,7 +6,7 @@ use crate::log_buffer::LogBuffer;
 use crate::log_entry::LogEntry;
 use crate::search::SearchEngine;
 use crate::virtual_scroll::VirtualScroll;
-use egui::{self, Color32, Rect, Response, Sense, Ui, Vec2};
+use egui::{self, Color32, Rect, Response, Sense, Ui, UiKind, Vec2};
 
 /// Context menu actions
 #[derive(Clone, Debug, PartialEq)]
@@ -377,12 +377,12 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::Copy);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu);
             }
 
             if ui.button("📄 复制全部").clicked() {
                 context_action = Some(ContextMenuAction::CopyAll);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
@@ -395,14 +395,14 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::ToggleBookmark);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
 
             if ui.button("✓ 全选                        ⌘A").clicked() {
                 context_action = Some(ContextMenuAction::SelectAll);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             if ui
@@ -410,19 +410,19 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::ClearSelection);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
 
             if ui.button("⬆ 滚动到顶部            Home").clicked() {
                 context_action = Some(ContextMenuAction::ScrollToTop);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             if ui.button("⬇ 滚动到底部             End").clicked() {
                 context_action = Some(ContextMenuAction::ScrollToBottom);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
         });
 
@@ -663,7 +663,7 @@ impl MainView {
                     || (Some(buffer_idx) == self.selected_line && self.selection_range.is_none());
 
                 // Create a frame for the row
-                let frame = egui::Frame::none().fill(if is_selected {
+                let frame = egui::Frame::new().fill(if is_selected {
                     self.highlighter.theme.selection
                 } else if search.is_current_match(buffer_idx) {
                     self.highlighter.theme.current_match
@@ -767,12 +767,12 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::Copy);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             if ui.button("📄 复制全部").clicked() {
                 context_action = Some(ContextMenuAction::CopyAll);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
@@ -785,14 +785,14 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::ToggleBookmark);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
 
             if ui.button("✓ 全选                        ⌘A").clicked() {
                 context_action = Some(ContextMenuAction::SelectAll);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             if ui
@@ -800,19 +800,19 @@ impl MainView {
                 .clicked()
             {
                 context_action = Some(ContextMenuAction::ClearSelection);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             ui.separator();
 
             if ui.button("⬆ 滚动到顶部            Home").clicked() {
                 context_action = Some(ContextMenuAction::ScrollToTop);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
 
             if ui.button("⬇ 滚动到底部             End").clicked() {
                 context_action = Some(ContextMenuAction::ScrollToBottom);
-                ui.close_menu();
+                ui.close_kind(UiKind::Menu)
             }
         });
 
