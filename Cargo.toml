@@ -1,0 +1,74 @@
+[package]
+name = "logline"
+version = "0.1.0"
+edition = "2021"
+description = "A high-performance real-time log viewer"
+authors = ["zibo chen <qw.54@163.com>"]
+repository = "https://github.com/zibo-chen/logline"
+homepage = "https://github.com/zibo-chen/logline"
+license = "MIT"
+
+[dependencies]
+# GUI framework
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# File watching
+notify = "6.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Regex for parsing and searching
+regex = "1.10"
+
+# Encoding detection
+encoding_rs = "0.8"
+chardetng = "0.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Channel for async communication
+crossbeam-channel = "0.5"
+
+# Time handling
+chrono = "0.4"
+
+# Directories for config
+dirs = "5.0"
+
+# File dialog
+rfd = "0.15"
+
+# MCP (Model Context Protocol)
+rmcp = { version = "0.12", features = [
+    "server",
+    "transport-streamable-http-server",
+] }
+axum = "0.8"
+tower = "0.5"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,178 @@
+//! Activity Bar - Left-side icon navigation
+//!
+//! A narrow vertical bar with icon buttons for switching views.
+
+use crate::i18n::Translations as t;
+use egui::{Color32, RichText, Ui, Vec2};
+
+/// Activity bar view types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityView {
+    Explorer,
+    Search,
+    Settings,
+}
+
+/// Activity bar state
+pub struct ActivityBar {
+    /// Current active view
+    pub active_view: ActivityView,
+    /// Server listening status
+    pub server_running: bool,
+    /// Server port
+    pub server_port: u16,
+    /// Number of connected agents
+    pub connected_agents: usize,
+}
+
+impl Default for ActivityBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ActivityBar {
+    pub fn new() -> Self {
+        Self {
+            active_view: ActivityView::Explorer,
+            server_running: false,
+            server_port: 12500,
+            connected_agents: 0,
+        }
+    }
+
+    /// Render the activity bar
+    pub fn show(&mut self, ui: &mut Ui) -> ActivityBarAction {
+        let mut action = ActivityBarAction::None;
+
+        ui.vertical_centered(|ui| {
+            ui.add_space(8.0);
+
+            // Explorer button
+            if self.icon_button(
+                ui,
+                "📁",
+                t::explorer(),
+                self.active_view == ActivityView::Explorer,
+            ) {
+                if self.active_view == ActivityView::Explorer {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Explorer;
+                    action = ActivityBarAction::SwitchView(ActivityView::Explorer);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Search button
+            if self.icon_button(
+                ui,
+                "🔍",
+                t::search(),
+                self.active_view == ActivityView::Search,
+            ) {
+                if self.active_view == ActivityView::Search {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Search;
+                    action = ActivityBarAction::SwitchView(ActivityView::Search);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Settings button
+            if self.icon_button(
+                ui,
+                "⚙",
+                t::settings(),
+                self.active_view == ActivityView::Settings,
+            ) {
+                if self.active_view == ActivityView::Settings {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Settings;
+                    action = ActivityBarAction::SwitchView(ActivityView::Settings);
+                }
+            }
+
+            // Spacer to push status to bottom
+            ui.add_space(ui.available_height() - 80.0);
+
+            // Server status indicator
+            ui.separator();
+            ui.add_space(4.0);
+
+            let (status_icon, status_color, tooltip) = if self.server_running {
+                if self.connected_agents > 0 {
+                    (
+                        "📡",
+                        Color32::from_rgb(50, 205, 50),
+                        t::server_running()
+                            .replace("{}", &self.server_port.to_string())
+                            .replacen("{}", &self.connected_agents.to_string(), 1),
+                    )
+                } else {
+                    (
+                        "📡",
+                        Color32::from_rgb(255, 193, 7),
+                        t::server_waiting().replace("{}", &self.server_port.to_string()),
+                    )
+                }
+            } else {
+                ("📡", Color32::GRAY, t::server_stopped().to_string())
+            };
+
+            let response = ui.add(
+                egui::Button::new(RichText::new(status_icon).size(20.0).color(status_color))
+                    .frame(false)
+                    .min_size(Vec2::new(32.0, 32.0)),
+            );
+
+            if response.clicked() {
+                action = ActivityBarAction::ToggleServer;
+            }
+
+            response.on_hover_text(tooltip);
+
+            ui.add_space(4.0);
+        });
+
+        action
+    }
+
+    /// Render an icon button
+    fn icon_button(&self, ui: &mut Ui, icon: &str, tooltip: &str, active: bool) -> bool {
+        let text_color = if active {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().text_color()
+        };
+
+        let bg_color = if active {
+            ui.visuals().selection.bg_fill.linear_multiply(0.3)
+        } else {
+            Color32::TRANSPARENT
+        };
+
+        let response = ui.add(
+            egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
+                .fill(bg_color)
+                .min_size(Vec2::new(40.0, 40.0)),
+        );
+
+        let clicked = response.clicked();
+        response.on_hover_text(tooltip);
+        clicked
+    }
+}
+
+/// Actions from the activity bar
+#[derive(Debug, Clone)]
+pub enum ActivityBarAction {
+    None,
+    SwitchView(ActivityView),
+    TogglePanel,
+    ToggleServer,
+}
