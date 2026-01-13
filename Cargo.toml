@@ -52,8 +52,11 @@ dirs = "5.0"
 # File dialog
 rfd = "0.15"
 
-# Force newer ashpd version to fix Linux compilation
+# Force specific versions to fix Linux and Windows compilation issues
+# zbus 5.13.1 has bugs on Windows and Linux, use 5.1 instead
+# Use tokio integration to avoid extra threads and better async runtime integration
 ashpd = "0.12"
+zbus = { version = "=5.1.0", default-features = false, features = ["tokio"] }
 
 # MCP (Model Context Protocol)
 rmcp = { version = "0.12", features = [
