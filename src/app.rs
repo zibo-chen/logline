@@ -8,6 +8,7 @@ use crate::log_entry::LogEntry;
 use crate::log_reader::LogReader;
 use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::search::LogFilter;
+use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel, OpenEditor};
 use crate::ui::filter_panel::FilterPanel;
@@ -119,6 +120,14 @@ pub struct LoglineApp {
 
     /// Whether this is the first frame (for initial theme application)
     first_frame: bool,
+
+    // === System Tray ===
+    /// System tray manager
+    tray_manager: Option<TrayManager>,
+    /// Whether the app should quit completely
+    should_quit: bool,
+    /// Whether tray has been initialized
+    tray_initialized: bool,
 }
 
 impl LoglineApp {
@@ -254,6 +263,10 @@ impl LoglineApp {
             tokio_runtime,
             // First frame flag for initial theme application
             first_frame: true,
+            // System tray - will be initialized after event loop starts
+            tray_manager: None,
+            should_quit: false,
+            tray_initialized: false,
         }
     }
 
@@ -962,6 +975,49 @@ impl LoglineApp {
 
 impl eframe::App for LoglineApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Initialize system tray after event loop has started (macOS requirement)
+        if !self.tray_initialized {
+            self.tray_initialized = true;
+            match TrayManager::new() {
+                Ok(tray) => {
+                    tracing::info!("System tray initialized");
+                    self.tray_manager = Some(tray);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize system tray: {}", e);
+                }
+            }
+        }
+
+        // Handle system tray events
+        if let Some(ref tray) = self.tray_manager {
+            if let Some(event) = tray.poll_events() {
+                match event {
+                    TrayEvent::ShowWindow => {
+                        // Restore the window
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayEvent::Quit => {
+                        // Actually quit the application
+                        self.should_quit = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        }
+
+        // Handle window close button - minimize to tray instead of quitting
+        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit {
+            if self.tray_manager.is_some() {
+                // Prevent the window from closing
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                // Hide the window instead
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                tracing::info!("Window minimized to tray");
+            }
+        }
+
         // Apply theme on first frame to ensure it takes effect after eframe initialization
         if self.first_frame {
             self.first_frame = false;
@@ -1356,6 +1412,9 @@ impl eframe::App for LoglineApp {
         } else if self.remote_server.is_running() {
             // Server is running but no active file, less frequent updates
             ctx.request_repaint_after(Duration::from_millis(200));
+        } else if self.tray_manager.is_some() {
+            // Tray is active, need periodic repaint to handle tray events
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
     }
 

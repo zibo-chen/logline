@@ -61,6 +61,10 @@ axum = "0.8"
 tower = "0.5"
 tokio-util = "0.7"
 
+# System tray support
+tray-icon = "0.19"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -72,3 +76,26 @@ lto = true
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Cargo-packager configuration
+[package.metadata.packager]
+before-packaging-command = "cargo build --release"
+product-name = "Logline"
+identifier = "com.zibo.logline"
+icons = ["res/icon.png"]
+resources = ["assets/*", "res/icon.png"]
+category = "Utility"
+long-description = """
+Logline is a high-performance real-time log viewer with advanced features including:
+- Real-time log monitoring with automatic reload
+- Powerful search and filtering capabilities
+- Syntax highlighting for log entries
+- Remote log streaming support
+- Model Context Protocol (MCP) server for AI-powered log analysis
+"""
+
+[package.metadata.packager.linux]
+generate-desktop-entry = true
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.13"
