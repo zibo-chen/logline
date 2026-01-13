@@ -10,9 +10,9 @@ license = "MIT"
 
 [dependencies]
 # GUI framework
-eframe = "0.29"
-egui = "0.29"
-egui_extras = "0.29"
+eframe = "0.33"
+egui = "0.33"
+egui_extras = "0.33"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -50,13 +50,10 @@ chrono = "0.4"
 dirs = "5.0"
 
 # File dialog
-rfd = "0.15"
+rfd = "0.17"
 
-# Force specific versions to fix Linux and Windows compilation issues
-# zbus 5.13.1 has bugs on Windows and Linux, use 5.1 instead
 # Use tokio integration to avoid extra threads and better async runtime integration
-ashpd = "0.12"
-zbus = { version = "=5.1.0", default-features = false, features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # MCP (Model Context Protocol)
 rmcp = { version = "0.12", features = [

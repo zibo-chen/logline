@@ -264,13 +264,14 @@ impl LoglineApp {
         // Load JetBrains Mono (English monospace font)
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
-            egui::FontData::from_static(include_bytes!("../assets/JetBrainsMono-Regular.ttf")),
+            egui::FontData::from_static(include_bytes!("../assets/JetBrainsMono-Regular.ttf"))
+                .into(),
         );
 
         // Load Noto Sans SC (Chinese font)
         fonts.font_data.insert(
             "noto_sans_sc".to_owned(),
-            egui::FontData::from_static(include_bytes!("../assets/NotoSansSC[wght].ttf")),
+            egui::FontData::from_static(include_bytes!("../assets/NotoSansSC[wght].ttf")).into(),
         );
 
         // Configure font families with fallback order:

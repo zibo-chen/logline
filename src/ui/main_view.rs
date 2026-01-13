@@ -285,8 +285,8 @@ impl MainView {
                     text_available_width,
                 );
 
-                // Use fonts cache for better performance
-                let galley = ui.fonts(|fonts| fonts.layout_job(layout_job));
+                // Layout the text with the context fonts
+                let galley = ui.painter().layout_job(layout_job);
                 painter.galley(
                     egui::pos2(text_x + 4.0, row_y + (row_height - galley.size().y) * 0.5),
                     galley,
