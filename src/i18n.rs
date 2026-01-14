@@ -403,6 +403,20 @@ impl Translations {
         }
     }
 
+    pub fn filters() -> &'static str {
+        match current_language() {
+            Language::English => "Filters",
+            Language::Chinese => "过滤器",
+        }
+    }
+
+    pub fn bookmarks() -> &'static str {
+        match current_language() {
+            Language::English => "Bookmarks",
+            Language::Chinese => "书签",
+        }
+    }
+
     pub fn server_running() -> &'static str {
         match current_language() {
             Language::English => "Server running (port {})\n{} connections",
@@ -513,6 +527,55 @@ impl Translations {
         match current_language() {
             Language::English => "Open file...",
             Language::Chinese => "打开文件...",
+        }
+    }
+
+    pub fn open_file_dialog_title() -> &'static str {
+        match current_language() {
+            Language::English => "Open File",
+            Language::Chinese => "打开文件",
+        }
+    }
+
+    pub fn file_path_input_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Enter file path or start typing to search...",
+            Language::Chinese => "输入文件路径或开始输入搜索文件...",
+        }
+    }
+
+    pub fn browse_button() -> &'static str {
+        match current_language() {
+            Language::English => "Browse...",
+            Language::Chinese => "浏览...",
+        }
+    }
+
+    pub fn recent_files_label() -> &'static str {
+        match current_language() {
+            Language::English => "Recent files:",
+            Language::Chinese => "最近打开:",
+        }
+    }
+
+    pub fn start_typing_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Start typing to search files...",
+            Language::Chinese => "开始输入以搜索文件...",
+        }
+    }
+
+    pub fn file_encoding() -> &'static str {
+        match current_language() {
+            Language::English => "Encoding:",
+            Language::Chinese => "文件编码:",
+        }
+    }
+
+    pub fn file_encoding_hint() -> &'static str {
+        match current_language() {
+            Language::English => "(Auto-detect if not specified)",
+            Language::Chinese => "(未指定时自动检测)",
         }
     }
 
@@ -789,13 +852,6 @@ impl Translations {
         }
     }
 
-    pub fn word_wrap() -> &'static str {
-        match current_language() {
-            Language::English => "Word wrap",
-            Language::Chinese => "自动换行",
-        }
-    }
-
     pub fn show_row_separator() -> &'static str {
         match current_language() {
             Language::English => "Show row separator",
@@ -836,6 +892,143 @@ impl Translations {
         match current_language() {
             Language::English => "Level:",
             Language::Chinese => "级别:",
+        }
+    }
+
+    // ============ Advanced Filters Panel ============
+    pub fn log_levels() -> &'static str {
+        match current_language() {
+            Language::English => "Log Levels",
+            Language::Chinese => "日志级别",
+        }
+    }
+
+    pub fn no_exclude_patterns() -> &'static str {
+        match current_language() {
+            Language::English => "No exclude patterns",
+            Language::Chinese => "无排除模式",
+        }
+    }
+
+    pub fn text_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Text pattern",
+            Language::Chinese => "文本模式",
+        }
+    }
+
+    pub fn regex_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Regex pattern",
+            Language::Chinese => "正则表达式模式",
+        }
+    }
+
+    pub fn add_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Add Pattern",
+            Language::Chinese => "添加模式",
+        }
+    }
+
+    pub fn pattern_type() -> &'static str {
+        match current_language() {
+            Language::English => "Type:",
+            Language::Chinese => "类型:",
+        }
+    }
+
+    pub fn text() -> &'static str {
+        match current_language() {
+            Language::English => "Text",
+            Language::Chinese => "文本",
+        }
+    }
+
+    pub fn regex() -> &'static str {
+        match current_language() {
+            Language::English => "Regex",
+            Language::Chinese => "正则",
+        }
+    }
+
+    pub fn exclude_regex_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Enter regex pattern to exclude...",
+            Language::Chinese => "输入要排除的正则表达式...",
+        }
+    }
+
+    pub fn regex_help() -> &'static str {
+        match current_language() {
+            Language::English => "Regex syntax: . * + ? [] {} () | ^ $ \\",
+            Language::Chinese => "正则语法: . * + ? [] {} () | ^ $ \\",
+        }
+    }
+
+    // ============ Bookmarks Panel ============
+    pub fn no_bookmarks() -> &'static str {
+        match current_language() {
+            Language::English => "No bookmarks",
+            Language::Chinese => "无书签",
+        }
+    }
+
+    pub fn bookmark_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Press Cmd+B or right-click to add bookmarks",
+            Language::Chinese => "按 Cmd+B 或右键点击添加书签",
+        }
+    }
+
+    pub fn total_segments() -> &'static str {
+        match current_language() {
+            Language::English => "Segments",
+            Language::Chinese => "分段",
+        }
+    }
+
+    pub fn total_bookmarks() -> &'static str {
+        match current_language() {
+            Language::English => "Total",
+            Language::Chinese => "总计",
+        }
+    }
+
+    pub fn line() -> &'static str {
+        match current_language() {
+            Language::English => "Line",
+            Language::Chinese => "行",
+        }
+    }
+
+    pub fn remove_segment() -> &'static str {
+        match current_language() {
+            Language::English => "Remove segment",
+            Language::Chinese => "移除分段",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn and() -> &'static str {
+        match current_language() {
+            Language::English => "and",
+            Language::Chinese => "及",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn more_lines() -> &'static str {
+        match current_language() {
+            Language::English => "more lines",
+            Language::Chinese => "行",
+        }
+    }
+
+    pub fn clear_all_bookmarks() -> &'static str {
+        match current_language() {
+            Language::English => "Clear All Bookmarks",
+            Language::Chinese => "清除所有书签",
         }
     }
 }

@@ -67,6 +67,7 @@ pub enum ServerEvent {
         project_name: String,
         stream_id: String,
         remote_addr: SocketAddr,
+        #[allow(dead_code)]
         cache_path: PathBuf,
     },
     /// Agent disconnected

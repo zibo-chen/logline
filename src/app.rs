@@ -1,16 +1,20 @@
 //! Main application logic
 
+use crate::bookmarks::BookmarksStore;
 use crate::config::{AppConfig, DisplayConfig, Shortcuts, Theme};
 use crate::file_watcher::FileWatcher;
 use crate::i18n::set_language;
 use crate::log_buffer::{LogBuffer, LogBufferConfig};
 use crate::log_entry::LogEntry;
-use crate::log_reader::LogReader;
+use crate::log_reader::{LogReader, LogReaderConfig};
 use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::search::LogFilter;
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
+use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
+use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel, OpenEditor};
+use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
 use crate::ui::main_view::{ContextMenuAction, MainView};
@@ -71,6 +75,8 @@ pub struct LoglineApp {
     reader_rx: Option<Receiver<ReaderMessage>>,
     /// Background reader command sender
     reader_tx: Option<Sender<ReaderCommand>>,
+    /// Current file encoding
+    current_encoding: Option<&'static encoding_rs::Encoding>,
 
     /// Search and filter engine
     filter: LogFilter,
@@ -92,6 +98,8 @@ pub struct LoglineApp {
 
     /// Go-to-line dialog state
     goto_dialog: GotoLineDialog,
+    /// File picker dialog
+    file_picker_dialog: FilePickerDialog,
 
     /// Last update time for rate limiting
     last_update: Instant,
@@ -105,6 +113,10 @@ pub struct LoglineApp {
     activity_bar: ActivityBar,
     /// Explorer panel (file/stream browser)
     explorer_panel: ExplorerPanel,
+    /// Advanced filters panel
+    advanced_filters_panel: AdvancedFiltersPanel,
+    /// Bookmarks panel
+    bookmarks_panel: BookmarksPanel,
     /// Settings panel
     settings_panel: SettingsPanel,
     /// Global search panel
@@ -128,6 +140,10 @@ pub struct LoglineApp {
     should_quit: bool,
     /// Whether tray has been initialized
     tray_initialized: bool,
+
+    // === Bookmarks Persistence ===
+    /// Bookmarks storage
+    bookmarks_store: BookmarksStore,
 }
 
 impl LoglineApp {
@@ -225,6 +241,7 @@ impl LoglineApp {
             watcher: None,
             reader_rx: None,
             reader_tx: None,
+            current_encoding: None,
             filter: LogFilter::new(),
             filtered_indices: Vec::new(),
             filter_active: false,
@@ -244,12 +261,20 @@ impl LoglineApp {
                 reverse_order: false,
             },
             goto_dialog: GotoLineDialog::default(),
+            file_picker_dialog: FilePickerDialog::new(),
             last_update: Instant::now(),
             pending_entries: 0,
             // New components
             remote_server,
             activity_bar: ActivityBar::new(),
-            explorer_panel: ExplorerPanel::new(),
+            explorer_panel: {
+                let mut panel = ExplorerPanel::new();
+                // Load recent files from config
+                panel.local_files = config.recent_files.clone();
+                panel
+            },
+            advanced_filters_panel: AdvancedFiltersPanel::new(),
+            bookmarks_panel: BookmarksPanel::new(),
             settings_panel,
             global_search_panel: {
                 let mut panel = GlobalSearchPanel::new();
@@ -267,6 +292,8 @@ impl LoglineApp {
             tray_manager: None,
             should_quit: false,
             tray_initialized: false,
+            // Load bookmarks from disk
+            bookmarks_store: BookmarksStore::load().unwrap_or_default(),
         }
     }
 
@@ -315,16 +342,50 @@ impl LoglineApp {
     }
 
     /// Open a log file
-    pub fn open_file(&mut self, path: PathBuf) -> Result<()> {
-        // Stop any existing reader
-        self.close_file();
+    pub fn open_file(
+        &mut self,
+        path: PathBuf,
+        encoding: Option<&'static encoding_rs::Encoding>,
+    ) -> Result<()> {
+        // Stop any existing reader (but don't save bookmarks here,
+        // as they should already be saved before clearing the buffer)
+        self.close_file_without_saving();
 
-        // Create reader
-        let mut reader = LogReader::new(&path)?;
+        // If no encoding specified, try to get saved encoding for this file
+        let final_encoding = encoding.or_else(|| self.config.get_file_encoding(&path));
+
+        // Save encoding
+        self.current_encoding = final_encoding;
+
+        // Create reader with optional encoding
+        let config = LogReaderConfig {
+            encoding: final_encoding,
+            ..Default::default()
+        };
+        let mut reader = LogReader::with_config(&path, config)?;
 
         // Read initial content
         let entries = reader.read_all()?;
         self.buffer.extend(entries);
+
+        // Restore bookmarks for this file
+        if let Some(file_bookmarks) = self.bookmarks_store.get_bookmarks(&path) {
+            let bookmarked_lines: Vec<usize> = file_bookmarks.lines.iter().copied().collect();
+            // Collect all indices first to avoid borrow conflicts
+            let indices_to_bookmark: Vec<usize> = bookmarked_lines
+                .into_iter()
+                .filter_map(|line_number| {
+                    self.buffer
+                        .iter()
+                        .position(|e| e.line_number == line_number)
+                })
+                .collect();
+
+            // Then toggle bookmarks
+            for index in indices_to_bookmark {
+                self.buffer.toggle_bookmark(index);
+            }
+        }
 
         // Update filter
         self.update_filter();
@@ -339,12 +400,14 @@ impl LoglineApp {
         let reader_path = path.clone();
         let reader_offset = reader.offset();
         let reader_line_count = reader.line_count();
+        let reader_encoding = final_encoding;
 
         thread::spawn(move || {
             Self::reader_thread(
                 reader_path,
                 reader_offset,
                 reader_line_count,
+                reader_encoding,
                 msg_tx,
                 cmd_rx,
             );
@@ -357,9 +420,20 @@ impl LoglineApp {
         self.reader_rx = Some(msg_rx);
         self.reader_tx = Some(cmd_tx);
 
-        // Update recent files
-        self.config.add_recent_file(path.clone());
-        let _ = self.config.save();
+        // Update recent files (only for local files, not cache files)
+        let is_cache_file = if let Some(data_dir) = dirs::data_dir() {
+            let cache_dir = data_dir.join("logline").join("cache");
+            path.starts_with(&cache_dir)
+        } else {
+            false
+        };
+
+        if !is_cache_file {
+            self.config.add_recent_file(path.clone());
+            let _ = self.config.save();
+            // Also update explorer panel's local files list
+            self.explorer_panel.local_files = self.config.recent_files.clone();
+        }
 
         // Sync to MCP server
         if let Some(ref mcp_server) = self.mcp_server {
@@ -374,6 +448,18 @@ impl LoglineApp {
 
     /// Close the current file
     pub fn close_file(&mut self) {
+        // Save bookmarks before closing
+        let current_path = self.current_file.clone();
+        if let Some(path) = current_path {
+            self.save_current_bookmarks(&path);
+        }
+
+        self.close_file_without_saving();
+    }
+
+    /// Close file without saving bookmarks (used internally when switching files)
+    fn close_file_without_saving(&mut self) {
+        self.current_encoding = None;
         // Stop reader thread
         if let Some(tx) = self.reader_tx.take() {
             let _ = tx.send(ReaderCommand::Stop);
@@ -387,6 +473,27 @@ impl LoglineApp {
 
         self.reader = None;
         self.current_file = None;
+    }
+
+    /// Save bookmarks for the current file
+    fn save_current_bookmarks(&mut self, path: &PathBuf) {
+        use std::collections::HashSet;
+
+        // Collect all bookmarked line numbers
+        let bookmarked_lines: HashSet<usize> = self
+            .buffer
+            .iter()
+            .filter(|e| e.bookmarked)
+            .map(|e| e.line_number)
+            .collect();
+
+        // Update bookmarks store
+        self.bookmarks_store.set_bookmarks(path, bookmarked_lines);
+
+        // Save to disk
+        if let Err(e) = self.bookmarks_store.save() {
+            tracing::error!("Failed to save bookmarks: {}", e);
+        }
     }
 
     /// Start the MCP server
@@ -453,14 +560,16 @@ impl LoglineApp {
     /// Reload the current file from the beginning
     pub fn reload_file(&mut self) {
         if let Some(path) = self.current_file.clone() {
+            let encoding = self.current_encoding; // Preserve encoding
+
             // Close and clear
             self.close_file();
             self.buffer.clear();
             self.filtered_indices.clear();
             self.main_view.clear_selection();
 
-            // Reopen the file
-            match self.open_file(path) {
+            // Reopen the file with the same encoding
+            match self.open_file(path, encoding) {
                 Ok(()) => {
                     self.status_bar
                         .set_message("File reloaded", StatusLevel::Success);
@@ -476,15 +585,52 @@ impl LoglineApp {
         }
     }
 
+    /// Change the encoding of the current file
+    pub fn change_encoding(&mut self, encoding: Option<&'static encoding_rs::Encoding>) {
+        if let Some(path) = self.current_file.clone() {
+            // Save encoding preference
+            self.config.set_file_encoding(path.clone(), encoding);
+            let _ = self.config.save();
+
+            // Close and clear
+            self.close_file();
+            self.buffer.clear();
+            self.filtered_indices.clear();
+            self.main_view.clear_selection();
+
+            // Reopen with new encoding
+            match self.open_file(path, encoding) {
+                Ok(()) => {
+                    let encoding_name = encoding.map(|e| e.name()).unwrap_or("Auto");
+                    self.status_bar.set_message(
+                        format!("Encoding changed to: {}", encoding_name),
+                        StatusLevel::Success,
+                    );
+                }
+                Err(e) => {
+                    self.status_bar.set_message(
+                        format!("Failed to change encoding: {}", e),
+                        StatusLevel::Error,
+                    );
+                }
+            }
+        }
+    }
+
     /// Background reader thread function
     fn reader_thread(
         path: PathBuf,
         initial_offset: u64,
         initial_line_count: usize,
+        encoding: Option<&'static encoding_rs::Encoding>,
         msg_tx: Sender<ReaderMessage>,
         cmd_rx: Receiver<ReaderCommand>,
     ) {
-        let mut reader = match LogReader::new(&path) {
+        let config = LogReaderConfig {
+            encoding,
+            ..Default::default()
+        };
+        let mut reader = match LogReader::with_config(&path, config) {
             Ok(r) => r,
             Err(e) => {
                 let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
@@ -504,10 +650,19 @@ impl LoglineApp {
             // Check for new content
             match reader.has_new_content() {
                 Ok(true) => {
-                    // Check if file was truncated (rotation)
-                    if reader.offset() > reader.file_size() {
-                        let _ = msg_tx.send(ReaderMessage::FileReset);
-                        reader.seek_with_line_count(0, 0);
+                    // Check if file was truncated (rotation) by comparing with actual file size
+                    match std::fs::metadata(&path) {
+                        Ok(metadata) => {
+                            let current_size = metadata.len();
+                            if current_size < reader.offset() {
+                                // File was truncated - this is a rotation
+                                let _ = msg_tx.send(ReaderMessage::FileReset);
+                                reader.seek_with_line_count(0, 0);
+                            }
+                        }
+                        Err(e) => {
+                            let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
+                        }
                     }
 
                     match reader.read_new_lines() {
@@ -565,10 +720,9 @@ impl LoglineApp {
             self.filter.mark_dirty();
             self.pending_entries += 1;
 
-            // Auto-scroll to bottom when new entries arrive
-            if self.main_view.is_auto_scroll() {
-                self.main_view.scroll_to_bottom();
-            }
+            // Note: When auto-scroll is enabled, stick_to_bottom in ScrollArea
+            // will automatically keep us at the bottom. No need to manually
+            // scroll, which prevents flickering.
         }
     }
 
@@ -583,7 +737,7 @@ impl LoglineApp {
                     project_name,
                     stream_id,
                     remote_addr,
-                    cache_path,
+                    cache_path: _,
                 } => {
                     tracing::info!(
                         "Agent '{}' ({}) connected from {}",
@@ -596,20 +750,8 @@ impl LoglineApp {
                         StatusLevel::Success,
                     );
 
-                    // Use full address (IP:port) to distinguish multiple agents with same name
-                    let display_name = format!("{}@{}", project_name, remote_addr);
-
-                    // Automatically open the cache file for viewing
-                    if let Err(e) = self.open_file(cache_path.clone()) {
-                        tracing::error!("Failed to open cache file: {}", e);
-                    } else {
-                        self.explorer_panel.add_editor(OpenEditor {
-                            name: display_name,
-                            path: cache_path,
-                            is_remote: true,
-                            is_dirty: false,
-                        });
-                    }
+                    // Don't automatically open the remote stream, just add it to the explorer
+                    // User can manually click to open it
                     has_stream_changes = true;
                 }
                 ServerEvent::AgentDisconnected {
@@ -775,6 +917,12 @@ impl LoglineApp {
                 if self.filter.filter.bookmarks_only {
                     self.update_filter();
                 }
+
+                // Auto-save bookmarks
+                let current_path = self.current_file.clone();
+                if let Some(path) = current_path {
+                    self.save_current_bookmarks(&path);
+                }
             }
             return None;
         }
@@ -851,6 +999,12 @@ impl LoglineApp {
                     // Mark filter as dirty to update bookmark-only filter
                     if self.filter.filter.bookmarks_only {
                         self.update_filter();
+                    }
+
+                    // Auto-save bookmarks
+                    let current_path = self.current_file.clone();
+                    if let Some(path) = current_path {
+                        self.save_current_bookmarks(&path);
                     }
                 }
             }
@@ -1071,7 +1225,7 @@ impl eframe::App for LoglineApp {
 
         // Bottom status bar
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            self.status_bar.show(
+            if let Some(action) = self.status_bar.show(
                 ui,
                 self.current_file.as_deref(),
                 &self.buffer,
@@ -1083,7 +1237,13 @@ impl eframe::App for LoglineApp {
                     None
                 },
                 self.main_view.selected_lines_count(),
-            );
+            ) {
+                match action {
+                    crate::ui::status_bar::StatusBarAction::ChangeEncoding(encoding) => {
+                        self.change_encoding(encoding);
+                    }
+                }
+            }
         });
 
         // === New: Activity Bar (leftmost narrow panel) ===
@@ -1154,16 +1314,28 @@ impl eframe::App for LoglineApp {
 
                             match self.explorer_panel.show(ui) {
                                 ExplorerAction::SelectEditor(idx) => {
-                                    if let Some(editor) = self.explorer_panel.open_editors.get(idx)
-                                    {
+                                    // Get editor path first to avoid borrow conflicts
+                                    let editor_path = self
+                                        .explorer_panel
+                                        .open_editors
+                                        .get(idx)
+                                        .map(|e| e.path.clone());
+
+                                    if let Some(path) = editor_path {
                                         // Switch to the selected editor/file
-                                        if self.current_file.as_ref() != Some(&editor.path) {
+                                        if self.current_file.as_ref() != Some(&path) {
+                                            // Save bookmarks for current file before switching
+                                            let current_path = self.current_file.clone();
+                                            if let Some(current) = current_path {
+                                                self.save_current_bookmarks(&current);
+                                            }
+
                                             // Clear buffer before switching
                                             self.buffer.clear();
                                             self.filtered_indices.clear();
                                             self.main_view.clear_selection();
 
-                                            let _ = self.open_file(editor.path.clone());
+                                            let _ = self.open_file(path, None);
 
                                             // Scroll to bottom to show latest logs
                                             self.main_view.scroll_to_bottom();
@@ -1209,36 +1381,61 @@ impl eframe::App for LoglineApp {
                                             if let Some(next_editor) =
                                                 self.explorer_panel.open_editors.get(selected_idx)
                                             {
-                                                let _ = self.open_file(next_editor.path.clone());
+                                                let _ =
+                                                    self.open_file(next_editor.path.clone(), None);
                                                 self.main_view.scroll_to_bottom();
                                             }
                                         }
                                     }
                                 }
                                 ExplorerAction::OpenLocalFile(path) => {
+                                    // Save bookmarks for current file before opening new one
+                                    let current_path = self.current_file.clone();
+                                    if let Some(path_to_save) = current_path {
+                                        self.save_current_bookmarks(&path_to_save);
+                                    }
+
                                     // Clear buffer before opening
                                     self.buffer.clear();
                                     self.filtered_indices.clear();
                                     self.main_view.clear_selection();
 
-                                    if let Err(e) = self.open_file(path) {
+                                    if let Err(e) = self.open_file(path.clone(), None) {
                                         self.status_bar.set_message(
                                             format!("打开文件失败: {}", e),
                                             StatusLevel::Error,
                                         );
                                     } else {
+                                        // Add to open editors
+                                        let name = path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| path.display().to_string());
+                                        self.explorer_panel.add_editor(OpenEditor {
+                                            name,
+                                            path: path.clone(),
+                                            is_remote: false,
+                                            is_dirty: false,
+                                        });
                                         // Scroll to bottom to show latest logs
                                         self.main_view.scroll_to_bottom();
                                     }
                                 }
                                 ExplorerAction::OpenRemoteStream(stream) => {
+                                    // Save bookmarks for current file before opening new one
+                                    let current_path = self.current_file.clone();
+                                    if let Some(path) = current_path {
+                                        self.save_current_bookmarks(&path);
+                                    }
+
                                     // Clear buffer before opening
                                     self.buffer.clear();
                                     self.filtered_indices.clear();
                                     self.main_view.clear_selection();
 
                                     // Open the cache file for the remote stream
-                                    if let Err(e) = self.open_file(stream.cache_path.clone()) {
+                                    if let Err(e) = self.open_file(stream.cache_path.clone(), None)
+                                    {
                                         self.status_bar.set_message(
                                             format!("打开远程流失败: {}", e),
                                             StatusLevel::Error,
@@ -1271,6 +1468,97 @@ impl eframe::App for LoglineApp {
                                     self.main_view.set_selection(buffer_index, buffer_index);
                                 }
                                 GlobalSearchAction::None => {}
+                            }
+                        }
+                        ActivityView::Filters => {
+                            // Advanced filters view
+                            if self
+                                .advanced_filters_panel
+                                .show(ui, &mut self.filter.filter)
+                            {
+                                // Filter changed, update the view
+                                self.filter.mark_dirty();
+                                self.update_filter();
+                            }
+                        }
+                        ActivityView::Bookmarks => {
+                            // Bookmarks view
+                            match self.bookmarks_panel.show(ui, &self.buffer) {
+                                BookmarkAction::JumpToLine(line_number) => {
+                                    // Find the buffer index for this line number
+                                    let index = self
+                                        .buffer
+                                        .iter()
+                                        .position(|e| e.line_number == line_number);
+
+                                    if let Some(index) = index {
+                                        self.main_view.scroll_to_line(index);
+                                        self.main_view.set_selection(index, index);
+                                    }
+                                }
+                                BookmarkAction::RemoveBookmark(line_number) => {
+                                    // Find and remove bookmark
+                                    let index = self
+                                        .buffer
+                                        .iter()
+                                        .position(|e| e.line_number == line_number);
+
+                                    if let Some(index) = index {
+                                        self.buffer.toggle_bookmark(index);
+                                        if self.filter.filter.bookmarks_only {
+                                            self.filter.mark_dirty();
+                                            self.update_filter();
+                                        }
+
+                                        // Auto-save bookmarks
+                                        let current_path = self.current_file.clone();
+                                        if let Some(path) = current_path {
+                                            self.save_current_bookmarks(&path);
+                                        }
+                                    }
+                                }
+                                BookmarkAction::RemoveSegment(indices) => {
+                                    // Remove all bookmarks in the segment
+                                    let count = self.buffer.toggle_bookmarks(&indices);
+                                    if count > 0 {
+                                        if self.filter.filter.bookmarks_only {
+                                            self.filter.mark_dirty();
+                                            self.update_filter();
+                                        }
+
+                                        // Auto-save bookmarks
+                                        let current_path = self.current_file.clone();
+                                        if let Some(path) = current_path {
+                                            self.save_current_bookmarks(&path);
+                                        }
+                                    }
+                                }
+                                BookmarkAction::ClearAll => {
+                                    // Clear all bookmarks
+                                    let all_indices: Vec<usize> = self
+                                        .buffer
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, e)| e.bookmarked)
+                                        .map(|(i, _)| i)
+                                        .collect();
+                                    if !all_indices.is_empty() {
+                                        self.buffer.toggle_bookmarks(&all_indices);
+                                        if self.filter.filter.bookmarks_only {
+                                            self.filter.mark_dirty();
+                                            self.update_filter();
+                                        }
+                                        self.status_bar
+                                            .set_message("所有书签已清除", StatusLevel::Info);
+
+                                        // Auto-save bookmarks
+                                        let current_path = self.current_file.clone();
+                                        if let Some(path) = current_path {
+                                            self.save_current_bookmarks(&path);
+                                        }
+                                    }
+                                }
+                                BookmarkAction::None => {}
                             }
                         }
                         ActivityView::Settings => {
@@ -1364,35 +1652,53 @@ impl eframe::App for LoglineApp {
             self.show_goto_dialog(ctx);
         }
 
+        // File picker dialog
+        match self.file_picker_dialog.show(ctx) {
+            FilePickerAction::OpenFile(path, encoding) => {
+                // Clear buffer before opening
+                self.buffer.clear();
+                self.filtered_indices.clear();
+                self.main_view.clear_selection();
+
+                if let Err(e) = self.open_file(path.clone(), encoding) {
+                    self.status_bar
+                        .set_message(format!("打开文件失败: {}", e), StatusLevel::Error);
+                } else {
+                    // Add to explorer
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.display().to_string());
+                    self.explorer_panel.add_editor(OpenEditor {
+                        name,
+                        path: path.clone(),
+                        is_remote: false,
+                        is_dirty: false,
+                    });
+                    // Scroll to bottom to show latest logs
+                    self.main_view.scroll_to_bottom();
+                }
+            }
+            FilePickerAction::Cancel => {}
+            FilePickerAction::None => {}
+        }
+
         // Handle actions
         if let Some(action) = action {
             match action {
                 AppAction::OpenFileDialog => {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Log files", &["log", "txt", "json"])
-                        .add_filter("All files", &["*"])
-                        .pick_file()
-                    {
-                        if let Err(e) = self.open_file(path.clone()) {
-                            self.status_bar.set_message(
-                                format!("Failed to open file: {}", e),
-                                StatusLevel::Error,
-                            );
-                        } else {
-                            // Add to explorer and recent files
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| path.display().to_string());
-                            self.explorer_panel.add_editor(OpenEditor {
-                                name,
-                                path: path.clone(),
-                                is_remote: false,
-                                is_dirty: false,
-                            });
-                            self.explorer_panel.add_recent_file(path);
-                        }
-                    }
+                    // Update recent files for file picker dialog
+                    let recent_files: Vec<PathBuf> = self
+                        .explorer_panel
+                        .open_editors
+                        .iter()
+                        .filter(|e| !e.is_remote)
+                        .map(|e| e.path.clone())
+                        .collect();
+                    self.file_picker_dialog.set_recent_files(recent_files);
+
+                    // Show the new file picker dialog
+                    self.file_picker_dialog.show_dialog();
                 }
                 AppAction::UpdateTheme => {
                     let visuals = match self.config.theme {

@@ -91,6 +91,7 @@ impl ExplorerPanel {
     }
 
     /// Add to recent files
+    #[allow(dead_code)]
     pub fn add_recent_file(&mut self, path: PathBuf) {
         // Remove if exists
         self.local_files.retain(|p| p != &path);

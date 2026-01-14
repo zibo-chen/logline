@@ -6,6 +6,7 @@
 //! designed for efficient real-time log monitoring and analysis.
 
 mod app;
+mod bookmarks;
 mod config;
 mod file_watcher;
 mod highlighter;

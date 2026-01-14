@@ -6,6 +6,13 @@ use crate::log_reader::LogReader;
 use egui::{self, Color32, RichText, Ui};
 use std::path::Path;
 
+/// Action returned by status bar
+#[derive(Debug, Clone)]
+pub enum StatusBarAction {
+    /// Change encoding
+    ChangeEncoding(Option<&'static encoding_rs::Encoding>),
+}
+
 /// Status bar component
 pub struct StatusBar {
     /// Current status message
@@ -33,7 +40,7 @@ impl StatusBar {
         auto_scroll: bool,
         filtered_count: Option<usize>,
         selected_lines: usize,
-    ) {
+    ) -> Option<StatusBarAction> {
         let is_dark = ui.ctx().style().visuals.dark_mode;
         let text_color = if is_dark {
             Color32::LIGHT_GRAY
@@ -45,6 +52,8 @@ impl StatusBar {
         } else {
             Color32::from_rgb(100, 100, 100)
         };
+
+        let mut action = None;
 
         ui.horizontal(|ui| {
             // File info
@@ -105,12 +114,37 @@ impl StatusBar {
 
                 ui.separator();
 
-                // Encoding
-                ui.label(
-                    RichText::new(reader.encoding_name())
-                        .color(dim_color)
-                        .small(),
-                );
+                // Encoding selector
+                let current_encoding = reader.encoding_name();
+                egui::ComboBox::from_id_salt("encoding_selector")
+                    .selected_text(RichText::new(current_encoding).color(dim_color).small())
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current_encoding == "Auto", t::auto()).clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(None));
+                        }
+                        if ui.selectable_label(current_encoding == "UTF-8", "UTF-8").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::UTF_8)));
+                        }
+                        if ui.selectable_label(current_encoding == "GBK", "GBK").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::GBK)));
+                        }
+                        if ui.selectable_label(current_encoding == "GB18030", "GB18030").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::GB18030)));
+                        }
+                        if ui.selectable_label(current_encoding == "Big5", "Big5").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::BIG5)));
+                        }
+                        if ui.selectable_label(current_encoding == "Shift_JIS", "Shift_JIS").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::SHIFT_JIS)));
+                        }
+                        if ui.selectable_label(current_encoding == "EUC-KR", "EUC-KR").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::EUC_KR)));
+                        }
+                        if ui.selectable_label(current_encoding == "ISO-8859-1", "ISO-8859-1").clicked() {
+                            action = Some(StatusBarAction::ChangeEncoding(Some(encoding_rs::WINDOWS_1252)));
+                        }
+                    });
 
                 ui.separator();
             }
@@ -159,6 +193,8 @@ impl StatusBar {
                 );
             });
         });
+
+        action
     }
 
     /// Set a status message

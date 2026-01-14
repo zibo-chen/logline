@@ -280,13 +280,24 @@ impl Default for SearchEngine {
     }
 }
 
+/// Exclude pattern entry with type
+#[derive(Debug, Clone)]
+pub struct ExcludePattern {
+    /// Pattern string
+    pub pattern: String,
+    /// Whether this is a regex pattern
+    pub is_regex: bool,
+}
+
 /// Filter configuration for log levels and other criteria
 #[derive(Debug, Clone)]
 pub struct FilterConfig {
     /// Enabled log levels
     pub levels: HashSet<LogLevel>,
-    /// Text to exclude (inverted filter)
+    /// Text to exclude (inverted filter) - simple strings for backward compatibility
     pub exclude_patterns: Vec<String>,
+    /// Advanced exclude patterns with type information
+    pub exclude_patterns_advanced: Vec<ExcludePattern>,
     /// Only show bookmarked lines
     pub bookmarks_only: bool,
 }
@@ -304,6 +315,7 @@ impl Default for FilterConfig {
         Self {
             levels,
             exclude_patterns: Vec::new(),
+            exclude_patterns_advanced: Vec::new(),
             bookmarks_only: false,
         }
     }
@@ -364,7 +376,27 @@ impl FilterConfig {
 
     /// Check if any filters are active
     pub fn is_filtering(&self) -> bool {
-        self.levels.len() < 6 || !self.exclude_patterns.is_empty() || self.bookmarks_only
+        self.levels.len() < 6
+            || !self.exclude_patterns.is_empty()
+            || !self.exclude_patterns_advanced.is_empty()
+            || self.bookmarks_only
+    }
+
+    /// Add advanced exclude pattern
+    #[allow(dead_code)]
+    pub fn add_exclude_advanced(&mut self, pattern: String, is_regex: bool) {
+        if !pattern.is_empty() {
+            self.exclude_patterns_advanced
+                .push(ExcludePattern { pattern, is_regex });
+        }
+    }
+
+    /// Remove advanced exclude pattern
+    #[allow(dead_code)]
+    pub fn remove_exclude_advanced(&mut self, index: usize) {
+        if index < self.exclude_patterns_advanced.len() {
+            self.exclude_patterns_advanced.remove(index);
+        }
     }
 }
 
@@ -398,12 +430,29 @@ impl LogFilter {
 
         self.filtered_indices.clear();
 
-        // Build exclude regexes
+        // Build exclude regexes from simple patterns (backward compatibility)
         let exclude_regexes: Vec<Regex> = self
             .filter
             .exclude_patterns
             .iter()
             .filter_map(|p| Regex::new(&format!("(?i){}", regex::escape(p))).ok())
+            .collect();
+
+        // Build exclude regexes from advanced patterns
+        let exclude_regexes_advanced: Vec<Regex> = self
+            .filter
+            .exclude_patterns_advanced
+            .iter()
+            .filter_map(|p| {
+                let pattern = if p.is_regex {
+                    // Use the pattern as-is for regex
+                    format!("(?i){}", p.pattern)
+                } else {
+                    // Escape for plain text matching
+                    format!("(?i){}", regex::escape(&p.pattern))
+                };
+                Regex::new(&pattern).ok()
+            })
             .collect();
 
         for (idx, entry) in buffer.iter().enumerate() {
@@ -419,9 +468,17 @@ impl LogFilter {
                 continue;
             }
 
-            // Exclude patterns
+            // Exclude patterns (simple)
             let excluded = exclude_regexes.iter().any(|r| r.is_match(&entry.content));
             if excluded {
+                continue;
+            }
+
+            // Exclude patterns (advanced)
+            let excluded_advanced = exclude_regexes_advanced
+                .iter()
+                .any(|r| r.is_match(&entry.content));
+            if excluded_advanced {
                 continue;
             }
 

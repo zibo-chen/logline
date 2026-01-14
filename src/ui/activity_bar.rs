@@ -10,6 +10,8 @@ use egui::{Color32, RichText, Ui, Vec2};
 pub enum ActivityView {
     Explorer,
     Search,
+    Filters,
+    Bookmarks,
     Settings,
 }
 
@@ -77,6 +79,40 @@ impl ActivityBar {
                 } else {
                     self.active_view = ActivityView::Search;
                     action = ActivityBarAction::SwitchView(ActivityView::Search);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Filters button
+            if self.icon_button(
+                ui,
+                "⚡",
+                t::filters(),
+                self.active_view == ActivityView::Filters,
+            ) {
+                if self.active_view == ActivityView::Filters {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Filters;
+                    action = ActivityBarAction::SwitchView(ActivityView::Filters);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Bookmarks button
+            if self.icon_button(
+                ui,
+                "★",
+                t::bookmarks(),
+                self.active_view == ActivityView::Bookmarks,
+            ) {
+                if self.active_view == ActivityView::Bookmarks {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Bookmarks;
+                    action = ActivityBarAction::SwitchView(ActivityView::Bookmarks);
                 }
             }
 

@@ -103,13 +103,6 @@ impl SettingsPanel {
             }
 
             if ui
-                .checkbox(&mut self.display_config.word_wrap, t::word_wrap())
-                .changed()
-            {
-                action = SettingsAction::DisplayConfigChanged;
-            }
-
-            if ui
                 .checkbox(
                     &mut self.display_config.show_row_separator,
                     t::show_row_separator(),
@@ -196,7 +189,7 @@ impl SettingsPanel {
             ui.add_space(8.0);
 
             // MCP Server settings
-            ui.label(RichText::new(format!("🤖 {}", t::mcp_service())).strong());
+            ui.label(RichText::new(format!("✨ {}", t::mcp_service())).strong());
             ui.add_space(4.0);
 
             if ui

@@ -3,6 +3,7 @@
 use crate::i18n::Language;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Application configuration
@@ -23,6 +24,8 @@ pub struct AppConfig {
     pub recent_files: Vec<PathBuf>,
     /// Maximum recent files to keep
     pub max_recent_files: usize,
+    /// File encoding preferences (file path -> encoding name)
+    pub file_encodings: HashMap<String, String>,
     /// Current theme
     pub theme: Theme,
     /// Application language
@@ -39,6 +42,7 @@ impl Default for AppConfig {
             remote_server: RemoteServerConfig::default(),
             recent_files: Vec::new(),
             max_recent_files: 10,
+            file_encodings: HashMap::new(),
             theme: Theme::Dark,
             language: Language::default(),
         }
@@ -109,6 +113,28 @@ impl AppConfig {
     pub fn clear_recent_files(&mut self) {
         self.recent_files.clear();
     }
+
+    /// Get encoding for a file
+    pub fn get_file_encoding(&self, path: &PathBuf) -> Option<&'static encoding_rs::Encoding> {
+        let path_str = path.to_string_lossy().to_string();
+        self.file_encodings
+            .get(&path_str)
+            .and_then(|name| encoding_rs::Encoding::for_label(name.as_bytes()))
+    }
+
+    /// Set encoding for a file
+    pub fn set_file_encoding(
+        &mut self,
+        path: PathBuf,
+        encoding: Option<&'static encoding_rs::Encoding>,
+    ) {
+        let path_str = path.to_string_lossy().to_string();
+        if let Some(enc) = encoding {
+            self.file_encodings.insert(path_str, enc.name().to_string());
+        } else {
+            self.file_encodings.remove(&path_str);
+        }
+    }
 }
 
 /// Window configuration
@@ -151,8 +177,6 @@ pub struct DisplayConfig {
     pub show_line_numbers: bool,
     /// Line number width in characters
     pub line_number_width: usize,
-    /// Word wrap
-    pub word_wrap: bool,
     /// Show timestamp column
     pub show_timestamp: bool,
     /// Show log level column
@@ -170,7 +194,6 @@ impl Default for DisplayConfig {
             line_height: 1.4,
             show_line_numbers: true,
             line_number_width: 6,
-            word_wrap: false,
             show_timestamp: false,
             show_level: false,
             tab_size: 4,

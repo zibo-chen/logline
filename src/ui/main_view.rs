@@ -108,11 +108,6 @@ impl MainView {
         search: &SearchEngine,
         display_config: &DisplayConfig,
     ) -> (Response, Option<ContextMenuAction>) {
-        // Use different rendering path for word wrap mode
-        if display_config.word_wrap {
-            return self.show_with_word_wrap(ui, buffer, filtered_indices, search, display_config);
-        }
-
         let total_rows = filtered_indices.map(|f| f.len()).unwrap_or(buffer.len());
 
         // Calculate layout
@@ -127,6 +122,9 @@ impl MainView {
         // Calculate target scroll offset if we need to scroll to a specific row
         let mut scroll_to_y = self.scroll_to_row.take().map(|row| row as f32 * row_height);
 
+        // Track if this is a scroll to bottom operation
+        let is_scroll_to_bottom = self.pending_scroll_to_bottom;
+
         // Handle pending scroll to bottom (uses actual total_rows)
         if self.pending_scroll_to_bottom {
             self.pending_scroll_to_bottom = false;
@@ -135,21 +133,44 @@ impl MainView {
             }
         }
 
+        // When user scrolls to bottom, enable auto-scroll to follow new logs
+        // When user scrolls to other positions, disable auto-scroll to view specific content
+        if is_scroll_to_bottom {
+            self.virtual_scroll.state.auto_scroll = true;
+        } else if scroll_to_y.is_some() {
+            self.virtual_scroll.state.auto_scroll = false;
+        }
+
         // Create the scroll area with ID for state persistence
-        let mut scroll_area = egui::ScrollArea::vertical()
+        let mut scroll_area = egui::ScrollArea::both()
             .id_salt("main_log_view")
             .auto_shrink([false, false]);
 
-        // Apply scroll offset if needed
+        // Use stick_to_bottom when auto-scroll is enabled
+        // This prevents flickering by letting egui handle the scroll position
+        if self.virtual_scroll.state.auto_scroll {
+            scroll_area = scroll_area.stick_to_bottom(true);
+        }
+
+        // Apply scroll offset when explicitly requested
         if let Some(y) = scroll_to_y {
-            scroll_area = scroll_area.vertical_scroll_offset(y);
+            // For scroll to bottom with auto-scroll, we need to explicitly set the offset
+            // to ensure immediate scrolling (stick_to_bottom alone won't scroll if already at bottom)
+            // For other positions, only scroll if auto-scroll is disabled
+            if is_scroll_to_bottom || !self.virtual_scroll.state.auto_scroll {
+                scroll_area = scroll_area.vertical_scroll_offset(y);
+            }
         }
 
         let response = scroll_area.show(ui, |ui| {
             // Reserve space for all content
             let content_height = total_rows as f32 * row_height;
+
+            // Use a large width to allow horizontal scrolling
+            let content_width = available_size.x.max(3000.0);
+
             let (rect, response) = ui.allocate_exact_size(
-                Vec2::new(available_size.x, content_height.max(available_size.y)),
+                Vec2::new(content_width, content_height.max(available_size.y)),
                 Sense::click_and_drag(),
             );
 
@@ -270,12 +291,8 @@ impl MainView {
                     None
                 };
 
-                // Calculate available width for text (accounting for line numbers)
-                let text_available_width = if display_config.word_wrap {
-                    rect.width() - text_x - 8.0
-                } else {
-                    f32::INFINITY
-                };
+                // Use infinite width for text (no wrapping, allows horizontal scrolling)
+                let text_available_width = f32::INFINITY;
 
                 let layout_job = self.highlighter.highlight_line_with_wrap(
                     &entry.content,
@@ -597,236 +614,6 @@ impl MainView {
         } else {
             crate::highlighter::HighlightTheme::light()
         };
-    }
-
-    /// Render the main view with word wrap enabled (uses egui's native layout)
-    fn show_with_word_wrap(
-        &mut self,
-        ui: &mut Ui,
-        buffer: &LogBuffer,
-        filtered_indices: Option<&[usize]>,
-        search: &SearchEngine,
-        display_config: &DisplayConfig,
-    ) -> (Response, Option<ContextMenuAction>) {
-        let total_rows = filtered_indices.map(|f| f.len()).unwrap_or(buffer.len());
-        let row_height = display_config.font_size * display_config.line_height;
-
-        // Get line number width
-        let max_line_num = buffer.last_line_number().max(1);
-        let line_num_width = format!("{}", max_line_num)
-            .len()
-            .max(display_config.line_number_width);
-        let line_num_pixel_width = if display_config.show_line_numbers {
-            (line_num_width as f32 + 2.0) * display_config.font_size * 0.6
-        } else {
-            0.0
-        };
-
-        let mut context_action = None;
-
-        let scroll_area = egui::ScrollArea::vertical()
-            .id_salt("main_log_view_wrap")
-            .auto_shrink([false, false]);
-
-        let output = scroll_area.show(ui, |ui| {
-            let available_width = ui.available_width();
-            let text_available_width = (available_width - line_num_pixel_width - 20.0).max(100.0);
-
-            // Allocate response for the entire content area
-            let (rect, main_response) = ui.allocate_exact_size(
-                Vec2::new(available_width, 0.0), // height will grow
-                Sense::click_and_drag(),
-            );
-            let _ = rect; // We'll use the response for context menu
-
-            for row_idx in 0..total_rows {
-                // Get the actual buffer index
-                let buffer_idx = if let Some(indices) = filtered_indices {
-                    indices.get(row_idx).copied()
-                } else {
-                    Some(row_idx)
-                };
-
-                let Some(buffer_idx) = buffer_idx else {
-                    continue;
-                };
-                let Some(entry) = buffer.get(buffer_idx) else {
-                    continue;
-                };
-
-                // Check if this row is selected
-                let is_in_selection = self
-                    .selection_range
-                    .map(|sel| sel.contains(row_idx))
-                    .unwrap_or(false);
-                let is_selected = is_in_selection
-                    || (Some(buffer_idx) == self.selected_line && self.selection_range.is_none());
-
-                // Create a frame for the row
-                let frame = egui::Frame::new().fill(if is_selected {
-                    self.highlighter.theme.selection
-                } else if search.is_current_match(buffer_idx) {
-                    self.highlighter.theme.current_match
-                } else {
-                    Color32::TRANSPARENT
-                });
-
-                let row_response = frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // Draw bookmark indicator
-                        if entry.bookmarked {
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    Vec2::new(4.0, row_height),
-                                ),
-                                0.0,
-                                self.highlighter.theme.bookmark,
-                            );
-                        }
-
-                        // Draw line number
-                        if display_config.show_line_numbers {
-                            let line_num_text =
-                                format!("{:>width$}", entry.line_number, width = line_num_width);
-                            ui.add_sized(
-                                [line_num_pixel_width, row_height],
-                                egui::Label::new(
-                                    egui::RichText::new(&line_num_text)
-                                        .monospace()
-                                        .size(display_config.font_size)
-                                        .color(self.highlighter.theme.line_number),
-                                ),
-                            );
-
-                            // Separator line after line number
-                            let cursor = ui.cursor();
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(cursor.min.x - 4.0, cursor.min.y),
-                                    egui::pos2(cursor.min.x - 4.0, cursor.min.y + row_height),
-                                ],
-                                egui::Stroke::new(1.0, Color32::from_gray(60)),
-                            );
-                        }
-
-                        // Draw log content with word wrap
-                        let search_query = if search.is_active() {
-                            Some(search.config.query.as_str())
-                        } else {
-                            None
-                        };
-
-                        let layout_job = self.highlighter.highlight_line_with_wrap(
-                            &entry.content,
-                            entry.level,
-                            search_query,
-                            search.config.case_sensitive,
-                            text_available_width,
-                        );
-
-                        ui.add(egui::Label::new(layout_job).wrap());
-                    });
-                });
-
-                // Handle click for selection
-                if row_response.response.clicked() {
-                    self.selection_range = None;
-                    self.selected_line = Some(buffer_idx);
-                }
-
-                // Draw row separator line
-                if display_config.show_row_separator {
-                    let cursor = ui.cursor();
-                    ui.painter().line_segment(
-                        [
-                            egui::pos2(0.0, cursor.min.y),
-                            egui::pos2(available_width, cursor.min.y),
-                        ],
-                        egui::Stroke::new(0.5, Color32::from_gray(45)),
-                    );
-                }
-
-                ui.add_space(2.0); // Small gap between rows
-            }
-
-            main_response
-        });
-
-        // Context menu on the scroll area
-        let has_selection = self.has_selection();
-
-        output.inner.context_menu(|ui| {
-            ui.set_min_width(150.0);
-
-            if ui
-                .add_enabled(
-                    has_selection,
-                    egui::Button::new("📋 复制").shortcut_text("⌘C"),
-                )
-                .clicked()
-            {
-                context_action = Some(ContextMenuAction::Copy);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            if ui.button("📄 复制全部").clicked() {
-                context_action = Some(ContextMenuAction::CopyAll);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            ui.separator();
-
-            if ui
-                .add_enabled(
-                    has_selection,
-                    egui::Button::new("🔖 切换书签              ⌘B"),
-                )
-                .clicked()
-            {
-                context_action = Some(ContextMenuAction::ToggleBookmark);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            ui.separator();
-
-            if ui.button("✓ 全选                        ⌘A").clicked() {
-                context_action = Some(ContextMenuAction::SelectAll);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            if ui
-                .add_enabled(has_selection, egui::Button::new("✗ 清除选择"))
-                .clicked()
-            {
-                context_action = Some(ContextMenuAction::ClearSelection);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            ui.separator();
-
-            if ui.button("⬆ 滚动到顶部            Home").clicked() {
-                context_action = Some(ContextMenuAction::ScrollToTop);
-                ui.close_kind(UiKind::Menu)
-            }
-
-            if ui.button("⬇ 滚动到底部             End").clicked() {
-                context_action = Some(ContextMenuAction::ScrollToBottom);
-                ui.close_kind(UiKind::Menu)
-            }
-        });
-
-        // Handle SelectAll
-        if context_action == Some(ContextMenuAction::SelectAll) && total_rows > 0 {
-            self.selection_range = Some(SelectionRange {
-                start_row: 0,
-                end_row: total_rows.saturating_sub(1),
-                is_dragging: false,
-            });
-            self.selected_line = None;
-        }
-
-        (output.inner, context_action)
     }
 }
 

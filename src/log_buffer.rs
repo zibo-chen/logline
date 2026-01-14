@@ -26,12 +26,16 @@ impl Default for LogBufferConfig {
 pub struct LogBuffer {
     /// All log entries
     entries: VecDeque<LogEntry>,
+    /// Shadow buffer for double-buffering during file rotation
+    shadow_entries: VecDeque<LogEntry>,
     /// Configuration
     config: LogBufferConfig,
     /// Total lines ever added (including trimmed ones)
     total_lines_added: usize,
     /// First line number in the buffer (1-indexed)
     first_line_number: usize,
+    /// Whether we're currently using the shadow buffer
+    using_shadow: bool,
 }
 
 impl LogBuffer {
@@ -44,9 +48,11 @@ impl LogBuffer {
     pub fn with_config(config: LogBufferConfig) -> Self {
         Self {
             entries: VecDeque::with_capacity(config.max_lines.min(10_000)),
+            shadow_entries: VecDeque::new(),
             config,
             total_lines_added: 0,
             first_line_number: 1,
+            using_shadow: false,
         }
     }
 
@@ -67,17 +73,36 @@ impl LogBuffer {
         for entry in entries {
             self.push(entry);
         }
+
+        // Only clear shadow buffer after we have accumulated enough new entries
+        // This prevents flickering during file rotation by keeping old data visible
+        // until new data is ready to be displayed
+        if self.using_shadow && !self.entries.is_empty() && !self.shadow_entries.is_empty() {
+            // Clear shadow buffer once we have some new entries
+            // You can adjust the threshold (e.g., 10, 50, 100 entries) if needed
+            if self.entries.len() >= 10 {
+                self.shadow_entries.clear();
+                self.using_shadow = false;
+            }
+        }
     }
 
-    /// Clear all entries
+    /// Clear all entries (used for file rotation)
+    /// Moves current entries to shadow buffer to prevent flickering
     pub fn clear(&mut self) {
-        self.entries.clear();
+        // Move current entries to shadow buffer before clearing
+        self.shadow_entries = std::mem::take(&mut self.entries);
+        self.using_shadow = true;
         self.first_line_number = self.total_lines_added + 1;
     }
 
     /// Get number of entries currently in buffer
     pub fn len(&self) -> usize {
-        self.entries.len()
+        if self.using_shadow && self.entries.is_empty() {
+            self.shadow_entries.len()
+        } else {
+            self.entries.len()
+        }
     }
 
     /// Check if buffer is empty
@@ -117,7 +142,13 @@ impl LogBuffer {
     /// Get entries within a line number range
     #[allow(dead_code)]
     pub fn get_line_range(&self, start_line: usize, end_line: usize) -> Vec<&LogEntry> {
-        self.entries
+        let entries = if self.using_shadow && self.entries.is_empty() {
+            &self.shadow_entries
+        } else {
+            &self.entries
+        };
+
+        entries
             .iter()
             .filter(|e| e.line_number >= start_line && e.line_number <= end_line)
             .collect()
@@ -125,7 +156,11 @@ impl LogBuffer {
 
     /// Iterate over all entries
     pub fn iter(&self) -> impl Iterator<Item = &LogEntry> {
-        self.entries.iter()
+        if self.using_shadow && self.entries.is_empty() {
+            Box::new(self.shadow_entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
+        } else {
+            Box::new(self.entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
+        }
     }
 
     /// Get first line number in buffer
@@ -136,7 +171,13 @@ impl LogBuffer {
 
     /// Get last line number in buffer
     pub fn last_line_number(&self) -> usize {
-        self.entries
+        let entries = if self.using_shadow && self.entries.is_empty() {
+            &self.shadow_entries
+        } else {
+            &self.entries
+        };
+
+        entries
             .back()
             .map(|e| e.line_number)
             .unwrap_or(self.first_line_number.saturating_sub(1))
@@ -145,7 +186,13 @@ impl LogBuffer {
     /// Filter entries by log level
     #[allow(dead_code)]
     pub fn filter_by_level(&self, levels: &[LogLevel]) -> Vec<&LogEntry> {
-        self.entries
+        let entries = if self.using_shadow && self.entries.is_empty() {
+            &self.shadow_entries
+        } else {
+            &self.entries
+        };
+
+        entries
             .iter()
             .filter(|e| e.level.map(|l| levels.contains(&l)).unwrap_or(true))
             .collect()
@@ -159,7 +206,13 @@ impl LogBuffer {
         case_sensitive: bool,
         use_regex: bool,
     ) -> Vec<(usize, &LogEntry)> {
-        self.entries
+        let entries = if self.using_shadow && self.entries.is_empty() {
+            &self.shadow_entries
+        } else {
+            &self.entries
+        };
+
+        entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.matches(query, case_sensitive, use_regex))
@@ -169,7 +222,13 @@ impl LogBuffer {
     /// Find indices of entries matching a query
     #[allow(dead_code)]
     pub fn search_indices(&self, query: &str, case_sensitive: bool, use_regex: bool) -> Vec<usize> {
-        self.entries
+        let entries = if self.using_shadow && self.entries.is_empty() {
+            &self.shadow_entries
+        } else {
+            &self.entries
+        };
+
+        entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.matches(query, case_sensitive, use_regex))
