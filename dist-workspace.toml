@@ -35,3 +35,4 @@ install-updater = false
 "libxcb-xfixes0-dev" = "*"
 "libxkbcommon-dev" = "*"
 "libssl-dev" = "*"
+"libxdo-dev" = "*"
