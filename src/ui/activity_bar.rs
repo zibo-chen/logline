@@ -19,6 +19,8 @@ pub enum ActivityView {
 pub struct ActivityBar {
     /// Current active view
     pub active_view: ActivityView,
+    /// Whether sidebar is visible
+    pub sidebar_visible: bool,
     /// Server listening status
     pub server_running: bool,
     /// Server port
@@ -37,6 +39,7 @@ impl ActivityBar {
     pub fn new() -> Self {
         Self {
             active_view: ActivityView::Explorer,
+            sidebar_visible: true,
             server_running: false,
             server_port: 12500,
             connected_agents: 0,
@@ -50,14 +53,10 @@ impl ActivityBar {
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
 
-            // Explorer button
-            if self.icon_button(
-                ui,
-                "📁",
-                t::explorer(),
-                self.active_view == ActivityView::Explorer,
-            ) {
-                if self.active_view == ActivityView::Explorer {
+            // Explorer button - only show as active when sidebar is visible and this view is selected
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Explorer;
+            if self.icon_button(ui, "📁", t::explorer(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Explorer {
                     action = ActivityBarAction::TogglePanel;
                 } else {
                     self.active_view = ActivityView::Explorer;
@@ -68,13 +67,9 @@ impl ActivityBar {
             ui.add_space(4.0);
 
             // Search button
-            if self.icon_button(
-                ui,
-                "🔍",
-                t::search(),
-                self.active_view == ActivityView::Search,
-            ) {
-                if self.active_view == ActivityView::Search {
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Search;
+            if self.icon_button(ui, "🔍", t::search(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Search {
                     action = ActivityBarAction::TogglePanel;
                 } else {
                     self.active_view = ActivityView::Search;
@@ -85,13 +80,9 @@ impl ActivityBar {
             ui.add_space(4.0);
 
             // Filters button
-            if self.icon_button(
-                ui,
-                "⚡",
-                t::filters(),
-                self.active_view == ActivityView::Filters,
-            ) {
-                if self.active_view == ActivityView::Filters {
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Filters;
+            if self.icon_button(ui, "⚡", t::filters(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Filters {
                     action = ActivityBarAction::TogglePanel;
                 } else {
                     self.active_view = ActivityView::Filters;
@@ -102,13 +93,9 @@ impl ActivityBar {
             ui.add_space(4.0);
 
             // Bookmarks button
-            if self.icon_button(
-                ui,
-                "★",
-                t::bookmarks(),
-                self.active_view == ActivityView::Bookmarks,
-            ) {
-                if self.active_view == ActivityView::Bookmarks {
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Bookmarks;
+            if self.icon_button(ui, "★", t::bookmarks(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Bookmarks {
                     action = ActivityBarAction::TogglePanel;
                 } else {
                     self.active_view = ActivityView::Bookmarks;
@@ -119,13 +106,9 @@ impl ActivityBar {
             ui.add_space(4.0);
 
             // Settings button
-            if self.icon_button(
-                ui,
-                "⚙",
-                t::settings(),
-                self.active_view == ActivityView::Settings,
-            ) {
-                if self.active_view == ActivityView::Settings {
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Settings;
+            if self.icon_button(ui, "⚙", t::settings(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Settings {
                     action = ActivityBarAction::TogglePanel;
                 } else {
                     self.active_view = ActivityView::Settings;
@@ -134,12 +117,9 @@ impl ActivityBar {
             }
 
             // Spacer to push status to bottom
-            ui.add_space(ui.available_height() - 80.0);
+            ui.add_space(ui.available_height() - 60.0);
 
             // Server status indicator
-            ui.separator();
-            ui.add_space(4.0);
-
             let (status_icon, status_color, tooltip) = if self.server_running {
                 if self.connected_agents > 0 {
                     (

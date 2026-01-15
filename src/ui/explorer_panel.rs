@@ -8,32 +8,12 @@ use egui::{CollapsingHeader, Color32, RichText, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Open editor/tab entry
-#[derive(Debug, Clone)]
-pub struct OpenEditor {
-    /// Display name
-    pub name: String,
-    /// File path (local or cache)
-    pub path: PathBuf,
-    /// Whether this is a remote stream
-    pub is_remote: bool,
-    /// Whether it has unsaved changes
-    pub is_dirty: bool,
-}
-
 /// Explorer panel state
 pub struct ExplorerPanel {
-    /// Currently open editors/tabs
-    pub open_editors: Vec<OpenEditor>,
-    /// Selected editor index
-    pub selected_editor: Option<usize>,
     /// Recent local files
     pub local_files: Vec<PathBuf>,
     /// Remote streams
     pub remote_streams: Vec<RemoteStream>,
-    /// Whether panel is visible
-    #[allow(dead_code)]
-    pub visible: bool,
 }
 
 impl Default for ExplorerPanel {
@@ -45,43 +25,8 @@ impl Default for ExplorerPanel {
 impl ExplorerPanel {
     pub fn new() -> Self {
         Self {
-            open_editors: Vec::new(),
-            selected_editor: None,
             local_files: Vec::new(),
             remote_streams: Vec::new(),
-            visible: true,
-        }
-    }
-
-    /// Add an open editor
-    pub fn add_editor(&mut self, editor: OpenEditor) {
-        // Check if already open
-        if let Some(idx) = self.open_editors.iter().position(|e| e.path == editor.path) {
-            self.selected_editor = Some(idx);
-            return;
-        }
-
-        self.open_editors.push(editor);
-        self.selected_editor = Some(self.open_editors.len() - 1);
-    }
-
-    /// Close an editor and return the closed editor
-    pub fn close_editor(&mut self, index: usize) -> Option<OpenEditor> {
-        if index < self.open_editors.len() {
-            let editor = self.open_editors.remove(index);
-
-            // Update selection
-            if let Some(selected) = self.selected_editor {
-                if selected >= self.open_editors.len() {
-                    self.selected_editor = self.open_editors.len().checked_sub(1);
-                } else if selected > index {
-                    self.selected_editor = Some(selected - 1);
-                }
-            }
-
-            Some(editor)
-        } else {
-            None
         }
     }
 
@@ -91,7 +36,6 @@ impl ExplorerPanel {
     }
 
     /// Add to recent files
-    #[allow(dead_code)]
     pub fn add_recent_file(&mut self, path: PathBuf) {
         // Remove if exists
         self.local_files.retain(|p| p != &path);
@@ -107,76 +51,54 @@ impl ExplorerPanel {
     pub fn show(&mut self, ui: &mut Ui) -> ExplorerAction {
         let mut action = ExplorerAction::None;
 
-        ui.vertical(|ui| {
-            ui.add_space(4.0);
+        // Set minimum width to prevent panel from shrinking
+        ui.set_min_width(200.0);
 
-            // OPEN EDITORS section
-            CollapsingHeader::new(RichText::new(format!("📑 {}", t::open_editors())).strong())
-                .default_open(true)
-                .show(ui, |ui| {
-                    if self.open_editors.is_empty() {
-                        ui.label(RichText::new(t::no_open_files()).weak().italics());
-                    } else {
-                        let mut close_idx = None;
-                        let mut select_idx = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(8.0);
 
-                        for (idx, editor) in self.open_editors.iter().enumerate() {
-                            let is_selected = self.selected_editor == Some(idx);
+                // LOCAL FILES section (moved to top)
+                CollapsingHeader::new(RichText::new(format!("📂 {}", t::local_files())).strong())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if self.local_files.is_empty() {
+                            ui.label(RichText::new(t::no_recent_files()).weak().italics());
+                        } else {
+                            for path in &self.local_files.clone() {
+                                let name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.display().to_string());
 
-                            ui.horizontal(|ui| {
-                                // Icon
-                                let icon = if editor.is_remote { "📡" } else { "📄" };
-                                ui.label(icon);
+                                ui.horizontal(|ui| {
+                                    ui.label("📄");
+                                    let response =
+                                        ui.selectable_label(false, RichText::new(&name).size(12.0));
 
-                                // Name with selection highlight
-                                let name_text = if editor.is_dirty {
-                                    format!("● {}", editor.name)
-                                } else {
-                                    editor.name.clone()
-                                };
+                                    if response.clicked() {
+                                        action = ExplorerAction::OpenLocalFile(path.clone());
+                                    }
 
-                                let response = ui.selectable_label(
-                                    is_selected,
-                                    RichText::new(&name_text).size(12.0),
-                                );
-
-                                if response.clicked() {
-                                    select_idx = Some(idx);
-                                }
-
-                                // Add spacing to push button to the right
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        // Close button - always render, will be visible when row is hovered
-                                        if ui.small_button("✕").clicked() {
-                                            close_idx = Some(idx);
-                                        }
-                                    },
-                                );
-                            });
-                        }
-
-                        if let Some(idx) = select_idx {
-                            self.selected_editor = Some(idx);
-                            action = ExplorerAction::SelectEditor(idx);
-                        }
-
-                        if let Some(idx) = close_idx {
-                            // Get editor info before closing
-                            if let Some(editor) = self.open_editors.get(idx).cloned() {
-                                action = ExplorerAction::CloseEditor(idx, editor);
+                                    response.on_hover_text(path.display().to_string());
+                                });
                             }
                         }
-                    }
-                });
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+                        ui.add_space(8.0);
 
-            // REMOTE STREAMS section (grouped by IP)
-            CollapsingHeader::new(RichText::new(format!("🌐 {}", t::remote_streams())).strong())
+                        if ui.button(format!("📁 {}", t::open_file())).clicked() {
+                            action = ExplorerAction::OpenFileDialog;
+                        }
+                    });
+
+                ui.add_space(12.0);
+
+                // REMOTE STREAMS section (grouped by IP)
+                CollapsingHeader::new(
+                    RichText::new(format!("🌐 {}", t::remote_streams())).strong(),
+                )
                 .default_open(true)
                 .show(ui, |ui| {
                     if self.remote_streams.is_empty() {
@@ -281,45 +203,7 @@ impl ExplorerPanel {
                         }
                     }
                 });
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            // LOCAL FILES section
-            CollapsingHeader::new(RichText::new(format!("📂 {}", t::local_files())).strong())
-                .default_open(true)
-                .show(ui, |ui| {
-                    if self.local_files.is_empty() {
-                        ui.label(RichText::new(t::no_recent_files()).weak().italics());
-                    } else {
-                        for path in &self.local_files.clone() {
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| path.display().to_string());
-
-                            ui.horizontal(|ui| {
-                                ui.label("📄");
-                                let response =
-                                    ui.selectable_label(false, RichText::new(&name).size(12.0));
-
-                                if response.clicked() {
-                                    action = ExplorerAction::OpenLocalFile(path.clone());
-                                }
-
-                                response.on_hover_text(path.display().to_string());
-                            });
-                        }
-                    }
-
-                    ui.add_space(8.0);
-
-                    if ui.button(format!("📁 {}", t::open_file())).clicked() {
-                        action = ExplorerAction::OpenFileDialog;
-                    }
-                });
-        });
+            });
 
         action
     }
@@ -329,9 +213,6 @@ impl ExplorerPanel {
 #[derive(Debug, Clone)]
 pub enum ExplorerAction {
     None,
-    SelectEditor(usize),
-    /// Close editor with (index, editor info)
-    CloseEditor(usize, OpenEditor),
     OpenLocalFile(PathBuf),
     OpenRemoteStream(RemoteStream),
     OpenFileDialog,

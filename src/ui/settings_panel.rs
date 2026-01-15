@@ -57,6 +57,9 @@ impl SettingsPanel {
     pub fn show(&mut self, ui: &mut Ui) -> SettingsAction {
         let mut action = SettingsAction::None;
 
+        // Set minimum width to prevent panel from shrinking
+        ui.set_min_width(200.0);
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(8.0);
             ui.heading(t::settings_title());

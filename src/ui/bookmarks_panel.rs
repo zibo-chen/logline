@@ -100,99 +100,107 @@ impl BookmarksPanel {
     pub fn show(&mut self, ui: &mut Ui, buffer: &LogBuffer) -> BookmarkAction {
         let mut action = BookmarkAction::None;
 
-        ui.vertical(|ui| {
-            ui.add_space(4.0);
-            ui.heading(RichText::new(t::bookmarks()).strong());
-            ui.add_space(8.0);
+        // Set minimum width to prevent panel from shrinking
+        ui.set_min_width(200.0);
 
-            let segments = Self::group_bookmarks(buffer);
-
-            if segments.is_empty() {
-                ui.label(RichText::new(t::no_bookmarks()).weak().italics());
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
                 ui.add_space(8.0);
-                ui.label(RichText::new(t::bookmark_hint()).weak().small());
-            } else {
-                // Statistics
-                let total_lines: usize = segments.iter().map(|s| s.indices.len()).sum();
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("{}: {}", t::total_segments(), segments.len()))
-                            .small(),
-                    );
-                    ui.label(RichText::new("  •  ").weak().small());
-                    ui.label(
-                        RichText::new(format!("{}: {}", t::total_bookmarks(), total_lines)).small(),
-                    );
-                });
+                ui.heading(RichText::new(t::bookmarks()).strong());
+                ui.add_space(12.0);
 
-                ui.add_space(8.0);
+                let segments = Self::group_bookmarks(buffer);
 
-                // Segments list in a scroll area
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (seg_idx, segment) in segments.iter().enumerate() {
-                            let _is_selected = self.selected_segment == Some(seg_idx);
-
-                            // Simple horizontal layout, no background
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("⭐").size(14.0));
-
-                                let segment_text = if segment.start_line == segment.end_line {
-                                    format!("{} {}", t::line(), segment.start_line)
-                                } else {
-                                    format!(
-                                        "{} {}-{}",
-                                        t::lines(),
-                                        segment.start_line,
-                                        segment.end_line
-                                    )
-                                };
-
-                                // Clickable line range
-                                if ui
-                                    .link(RichText::new(&segment_text).monospace())
-                                    .on_hover_text(t::go_to_line())
-                                    .clicked()
-                                {
-                                    self.selected_segment = Some(seg_idx);
-                                    action = BookmarkAction::JumpToLine(segment.start_line);
-                                }
-
-                                // Line count badge
-                                let count = segment.indices.len();
-                                ui.label(RichText::new(format!("({}L)", count)).small().weak());
-
-                                // Remove segment button
-                                if ui
-                                    .small_button("✕")
-                                    .on_hover_text(t::remove_segment())
-                                    .clicked()
-                                {
-                                    action = BookmarkAction::RemoveSegment(segment.indices.clone());
-                                }
-                            });
-
-                            ui.add_space(4.0);
-                        }
+                if segments.is_empty() {
+                    // Empty state with better visual
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("★").size(32.0).weak());
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(t::no_bookmarks()).weak().italics());
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(t::bookmark_hint()).weak().small());
+                    });
+                } else {
+                    // Statistics
+                    let total_lines: usize = segments.iter().map(|s| s.indices.len()).sum();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{}: {}", t::total_segments(), segments.len()))
+                                .small(),
+                        );
+                        ui.label(RichText::new("  •  ").weak().small());
+                        ui.label(
+                            RichText::new(format!("{}: {}", t::total_bookmarks(), total_lines))
+                                .small(),
+                        );
                     });
 
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
+                    ui.add_space(12.0);
 
-                // Clear all bookmarks button
-                if ui
-                    .button(
-                        RichText::new(t::clear_all_bookmarks())
-                            .color(Color32::from_rgb(244, 67, 54)),
-                    )
-                    .clicked()
-                {
-                    action = BookmarkAction::ClearAll;
+                    // Segments list
+                    for (seg_idx, segment) in segments.iter().enumerate() {
+                        let _is_selected = self.selected_segment == Some(seg_idx);
+
+                        // Simple horizontal layout, no background
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("⭐").size(14.0));
+
+                            let segment_text = if segment.start_line == segment.end_line {
+                                format!("{} {}", t::line(), segment.start_line)
+                            } else {
+                                format!(
+                                    "{} {}-{}",
+                                    t::lines(),
+                                    segment.start_line,
+                                    segment.end_line
+                                )
+                            };
+
+                            // Clickable line range
+                            if ui
+                                .link(RichText::new(&segment_text).monospace())
+                                .on_hover_text(t::go_to_line())
+                                .clicked()
+                            {
+                                self.selected_segment = Some(seg_idx);
+                                action = BookmarkAction::JumpToLine(segment.start_line);
+                            }
+
+                            // Line count badge
+                            let count = segment.indices.len();
+                            ui.label(RichText::new(format!("({}L)", count)).small().weak());
+
+                            // Remove segment button
+                            if ui
+                                .small_button("✕")
+                                .on_hover_text(t::remove_segment())
+                                .clicked()
+                            {
+                                action = BookmarkAction::RemoveSegment(segment.indices.clone());
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                    }
+
+                    ui.add_space(12.0);
+
+                    // Clear all bookmarks button
+                    if ui
+                        .button(
+                            RichText::new(t::clear_all_bookmarks())
+                                .color(Color32::from_rgb(244, 67, 54)),
+                        )
+                        .clicked()
+                    {
+                        action = BookmarkAction::ClearAll;
+                    }
                 }
-            }
-        });
+
+                ui.add_space(8.0);
+            });
 
         action
     }

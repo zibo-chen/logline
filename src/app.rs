@@ -10,7 +10,7 @@ use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
 use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
-use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel, OpenEditor};
+use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
@@ -330,18 +330,6 @@ impl LoglineApp {
             self.explorer_panel.local_files = self.config.recent_files.clone();
         }
 
-        // Add to explorer panel open editors
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
-        self.explorer_panel.add_editor(OpenEditor {
-            name,
-            path: path.clone(),
-            is_remote: false,
-            is_dirty: false,
-        });
-
         // Sync to MCP server
         if let Some(ref mcp_server) = self.mcp_server {
             mcp_server.add_local_file(path);
@@ -373,14 +361,6 @@ impl LoglineApp {
             &self.bookmarks_store,
         )?;
 
-        // Add to explorer panel
-        self.explorer_panel.add_editor(OpenEditor {
-            name: project_name,
-            path: cache_path,
-            is_remote: true,
-            is_dirty: false,
-        });
-
         // Scroll to bottom for new stream
         if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
             state.main_view.scroll_to_bottom();
@@ -394,12 +374,6 @@ impl LoglineApp {
 
     /// Close a tab by ID
     pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
-        // Also remove from explorer panel
-        if let Some(tab) = self.tab_manager.tab_bar.get_tab(tab_id) {
-            let path = tab.path.clone();
-            self.explorer_panel.open_editors.retain(|e| e.path != path);
-        }
-
         self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
     }
 
@@ -1217,20 +1191,16 @@ impl eframe::App for LoglineApp {
                         }
                         TabBarAction::CloseOtherTabs(keep_id) => {
                             self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
-                            // Also sync explorer panel
-                            self.sync_explorer_with_tabs();
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseTabsToRight(id) => {
                             self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
-                            self.sync_explorer_with_tabs();
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseAllTabs => {
                             self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
-                            self.explorer_panel.open_editors.clear();
                             self.toolbar_state.split_view_active = false;
                         }
                         TabBarAction::ReorderTabs(from, to) => {
@@ -1254,6 +1224,7 @@ impl eframe::App for LoglineApp {
                 // Update server status in activity bar
                 self.activity_bar.server_running = self.remote_server.is_running();
                 self.activity_bar.server_port = self.settings_panel.port();
+                self.activity_bar.sidebar_visible = self.sidebar_visible;
                 self.activity_bar.connected_agents = self
                     .remote_server
                     .streams()
@@ -1265,9 +1236,11 @@ impl eframe::App for LoglineApp {
                     ActivityBarAction::SwitchView(view) => {
                         self.sidebar_visible = true;
                         self.activity_bar.active_view = view;
+                        self.activity_bar.sidebar_visible = true;
                     }
                     ActivityBarAction::TogglePanel => {
                         self.sidebar_visible = !self.sidebar_visible;
+                        self.activity_bar.sidebar_visible = self.sidebar_visible;
                     }
                     ActivityBarAction::ToggleServer => {
                         if self.remote_server.is_running() {
@@ -1313,34 +1286,6 @@ impl eframe::App for LoglineApp {
                                 .update_remote_streams(self.remote_server.streams());
 
                             match self.explorer_panel.show(ui) {
-                                ExplorerAction::SelectEditor(idx) => {
-                                    // Get editor path first to avoid borrow conflicts
-                                    let editor_path = self
-                                        .explorer_panel
-                                        .open_editors
-                                        .get(idx)
-                                        .map(|e| e.path.clone());
-
-                                    if let Some(path) = editor_path {
-                                        // Find and switch to the tab with this path
-                                        if let Some(tab_id) = self.tab_manager.tab_bar.find_by_path(&path) {
-                                            self.tab_manager.tab_bar.active_tab = Some(tab_id);
-                                            // Update toolbar state from the newly selected tab
-                                            if let Some(state) = self.tab_manager.states.get(&tab_id) {
-                                                self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
-                                                self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
-                                            }
-                                        }
-                                    }
-                                }
-                                ExplorerAction::CloseEditor(idx, editor) => {
-                                    // Close the tab with this path
-                                    if let Some(tab_id) = self.tab_manager.tab_bar.find_by_path(&editor.path) {
-                                        self.close_tab(tab_id);
-                                    }
-                                    // Also close from explorer panel
-                                    self.explorer_panel.close_editor(idx);
-                                }
                                 ExplorerAction::OpenLocalFile(path) => {
                                     if let Err(e) = self.open_file(path.clone(), None) {
                                         self.status_bar.set_message(
@@ -1694,15 +1639,8 @@ impl eframe::App for LoglineApp {
         if let Some(action) = action {
             match action {
                 AppAction::OpenFileDialog => {
-                    // Update recent files for file picker dialog
-                    let recent_files: Vec<PathBuf> = self
-                        .explorer_panel
-                        .open_editors
-                        .iter()
-                        .filter(|e| !e.is_remote)
-                        .map(|e| e.path.clone())
-                        .collect();
-                    self.file_picker_dialog.set_recent_files(recent_files);
+                    // Use recent files from config
+                    self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
 
                     // Show the new file picker dialog
                     self.file_picker_dialog.show_dialog();
@@ -1744,22 +1682,6 @@ impl eframe::App for LoglineApp {
 }
 
 impl LoglineApp {
-    /// Sync explorer panel's open editors list with tab manager
-    fn sync_explorer_with_tabs(&mut self) {
-        use crate::ui::explorer_panel::OpenEditor;
-        self.explorer_panel.open_editors = self.tab_manager.tab_bar.tabs
-            .iter()
-            .map(|tab| {
-                OpenEditor {
-                    name: tab.name.clone(),
-                    path: tab.path.clone(),
-                    is_remote: tab.is_remote,
-                    is_dirty: false,
-                }
-            })
-            .collect();
-    }
-
     /// Show go-to-line dialog
     fn show_goto_dialog(&mut self, ctx: &egui::Context) {
         egui::Window::new("Go to Line")

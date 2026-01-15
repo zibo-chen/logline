@@ -177,6 +177,9 @@ impl GlobalSearchPanel {
     pub fn show(&mut self, ui: &mut Ui, buffer: &LogBuffer) -> GlobalSearchAction {
         let mut action = GlobalSearchAction::None;
 
+        // Set minimum width to prevent panel from shrinking
+        ui.set_min_width(200.0);
+
         ui.vertical(|ui| {
             ui.add_space(8.0);
 
@@ -186,9 +189,7 @@ impl GlobalSearchPanel {
                 ui.heading(Translations::search());
             });
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(12.0);
 
             // Search input
             let response = ui.add(
