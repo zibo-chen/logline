@@ -373,6 +373,20 @@ impl LoglineApp {
         Ok(())
     }
 
+    /// Open a log file in split view
+    pub fn open_file_in_split(&mut self, path: PathBuf) -> Result<()> {
+        // First, try to open the file in a new tab if it's not already open
+        let tab_id = self.tab_manager.open_local_file(path.clone(), None, &self.bookmarks_store)?;
+        
+        // Then open it in split view
+        self.tab_manager.enable_split(tab_id);
+        
+        self.status_bar
+            .set_message("File opened in split view", StatusLevel::Success);
+        
+        Ok(())
+    }
+
     /// Close a tab by ID
     pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
         self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
@@ -1305,6 +1319,136 @@ impl eframe::App for LoglineApp {
                                 }
                                 ExplorerAction::OpenFileDialog => {
                                     action = Some(AppAction::OpenFileDialog);
+                                }
+                                ExplorerAction::OpenInSplit(path) => {
+                                    if let Err(e) = self.open_file_in_split(path.clone()) {
+                                        self.status_bar.set_message(
+                                            format!("在分屏中打开文件失败: {}", e),
+                                            StatusLevel::Error,
+                                        );
+                                    }
+                                }
+                                ExplorerAction::CopyAbsolutePath(path) => {
+                                    let abs_path = path.display().to_string();
+                                    ui.ctx().copy_text(abs_path.clone());
+                                    self.status_bar.set_message(
+                                        format!("已复制绝对路径: {}", abs_path),
+                                        StatusLevel::Info,
+                                    );
+                                }
+                                ExplorerAction::CopyRelativePath(path) => {
+                                    let rel_path = if let Ok(current_dir) = std::env::current_dir() {
+                                        path.strip_prefix(&current_dir)
+                                            .unwrap_or(&path)
+                                            .display()
+                                            .to_string()
+                                    } else {
+                                        path.display().to_string()
+                                    };
+                                    ui.ctx().copy_text(rel_path.clone());
+                                    self.status_bar.set_message(
+                                        format!("已复制相对路径: {}", rel_path),
+                                        StatusLevel::Info,
+                                    );
+                                }
+                                ExplorerAction::CopyFilename(path) => {
+                                    let filename = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.display().to_string());
+                                    ui.ctx().copy_text(filename.clone());
+                                    self.status_bar.set_message(
+                                        format!("已复制文件名: {}", filename),
+                                        StatusLevel::Info,
+                                    );
+                                }
+                                ExplorerAction::RevealInFinder(path) => {
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        if let Err(e) = std::process::Command::new("open")
+                                            .arg("-R")
+                                            .arg(&path)
+                                            .spawn()
+                                        {
+                                            self.status_bar.set_message(
+                                                format!("打开访达失败: {}", e),
+                                                StatusLevel::Error,
+                                            );
+                                        } else {
+                                            self.status_bar.set_message(
+                                                "已在访达中显示".to_string(),
+                                                StatusLevel::Info,
+                                            );
+                                        }
+                                    }
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        if let Err(e) = std::process::Command::new("explorer")
+                                            .arg("/select,")
+                                            .arg(&path)
+                                            .spawn()
+                                        {
+                                            self.status_bar.set_message(
+                                                format!("打开资源管理器失败: {}", e),
+                                                StatusLevel::Error,
+                                            );
+                                        } else {
+                                            self.status_bar.set_message(
+                                                "已在资源管理器中显示".to_string(),
+                                                StatusLevel::Info,
+                                            );
+                                        }
+                                    }
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        // Try xdg-open on Linux
+                                        if let Some(parent) = path.parent() {
+                                            if let Err(e) = std::process::Command::new("xdg-open")
+                                                .arg(parent)
+                                                .spawn()
+                                            {
+                                                self.status_bar.set_message(
+                                                    format!("打开文件管理器失败: {}", e),
+                                                    StatusLevel::Error,
+                                                );
+                                            } else {
+                                                self.status_bar.set_message(
+                                                    "已在文件管理器中显示".to_string(),
+                                                    StatusLevel::Info,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                ExplorerAction::RemoveFromRecent(path) => {
+                                    self.explorer_panel.local_files.retain(|p| p != &path);
+                                    self.config.recent_files.retain(|p| p != &path);
+                                    if let Err(e) = self.config.save() {
+                                        self.status_bar.set_message(
+                                            format!("保存配置失败: {}", e),
+                                            StatusLevel::Error,
+                                        );
+                                    } else {
+                                        self.status_bar.set_message(
+                                            "已从最近文件中移除".to_string(),
+                                            StatusLevel::Info,
+                                        );
+                                    }
+                                }
+                                ExplorerAction::ClearRecentFiles => {
+                                    self.explorer_panel.local_files.clear();
+                                    self.config.recent_files.clear();
+                                    if let Err(e) = self.config.save() {
+                                        self.status_bar.set_message(
+                                            format!("保存配置失败: {}", e),
+                                            StatusLevel::Error,
+                                        );
+                                    } else {
+                                        self.status_bar.set_message(
+                                            "已清空最近文件列表".to_string(),
+                                            StatusLevel::Info,
+                                        );
+                                    }
                                 }
                                 ExplorerAction::None => {}
                             }

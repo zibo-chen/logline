@@ -69,8 +69,77 @@ impl ExplorerPanel {
                                         action = ExplorerAction::OpenLocalFile(path.clone());
                                     }
 
-                                    response.on_hover_text(path.display().to_string());
+                                    let response =
+                                        response.on_hover_text(path.display().to_string());
+
+                                    // Context menu for file
+                                    response.context_menu(|ui| {
+                                        ui.set_min_width(200.0);
+
+                                        if ui.button(t::open_file_context()).clicked() {
+                                            action = ExplorerAction::OpenLocalFile(path.clone());
+                                            ui.close();
+                                        }
+
+                                        if ui.button(t::open_in_split()).clicked() {
+                                            action = ExplorerAction::OpenInSplit(path.clone());
+                                            ui.close();
+                                        }
+
+                                        ui.separator();
+
+                                        if ui.button(t::copy_absolute_path()).clicked() {
+                                            action = ExplorerAction::CopyAbsolutePath(path.clone());
+                                            ui.close();
+                                        }
+
+                                        if ui.button(t::copy_relative_path()).clicked() {
+                                            action = ExplorerAction::CopyRelativePath(path.clone());
+                                            ui.close();
+                                        }
+
+                                        if ui.button(t::copy_filename()).clicked() {
+                                            action = ExplorerAction::CopyFilename(path.clone());
+                                            ui.close();
+                                        }
+
+                                        ui.separator();
+
+                                        #[cfg(target_os = "macos")]
+                                        if ui.button(t::reveal_in_finder()).clicked() {
+                                            action = ExplorerAction::RevealInFinder(path.clone());
+                                            ui.close();
+                                        }
+
+                                        #[cfg(target_os = "windows")]
+                                        if ui.button("Reveal in Explorer").clicked() {
+                                            action = ExplorerAction::RevealInFinder(path.clone());
+                                            ui.close();
+                                        }
+
+                                        #[cfg(target_os = "linux")]
+                                        if ui.button("Reveal in File Manager").clicked() {
+                                            action = ExplorerAction::RevealInFinder(path.clone());
+                                            ui.close();
+                                        }
+
+                                        ui.separator();
+
+                                        if ui.button(t::remove_from_recent()).clicked() {
+                                            action = ExplorerAction::RemoveFromRecent(path.clone());
+                                            ui.close();
+                                        }
+                                    });
                                 });
+                            }
+
+                            // Add clear all recent files option at the bottom of the list
+                            ui.add_space(4.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            if ui.button(t::clear_recent_files()).clicked() {
+                                action = ExplorerAction::ClearRecentFiles;
                             }
                         }
 
@@ -204,6 +273,13 @@ pub enum ExplorerAction {
     OpenLocalFile(PathBuf),
     OpenRemoteStream(RemoteStream),
     OpenFileDialog,
+    OpenInSplit(PathBuf),
+    CopyAbsolutePath(PathBuf),
+    CopyRelativePath(PathBuf),
+    CopyFilename(PathBuf),
+    RevealInFinder(PathBuf),
+    RemoveFromRecent(PathBuf),
+    ClearRecentFiles,
 }
 
 /// Format bytes to human-readable string

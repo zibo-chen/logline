@@ -1076,6 +1076,56 @@ impl Translations {
         }
     }
 
+    // ============ Explorer Context Menu ============
+    pub fn copy_absolute_path() -> &'static str {
+        match current_language() {
+            Language::English => "Copy Absolute Path",
+            Language::Chinese => "复制绝对路径",
+        }
+    }
+
+    pub fn copy_relative_path() -> &'static str {
+        match current_language() {
+            Language::English => "Copy Relative Path",
+            Language::Chinese => "复制相对路径",
+        }
+    }
+
+    pub fn copy_filename() -> &'static str {
+        match current_language() {
+            Language::English => "Copy Filename",
+            Language::Chinese => "复制文件名",
+        }
+    }
+
+    pub fn reveal_in_finder() -> &'static str {
+        match current_language() {
+            Language::English => "Reveal in Finder",
+            Language::Chinese => "在访达中显示",
+        }
+    }
+
+    pub fn open_file_context() -> &'static str {
+        match current_language() {
+            Language::English => "Open File",
+            Language::Chinese => "打开文件",
+        }
+    }
+
+    pub fn remove_from_recent() -> &'static str {
+        match current_language() {
+            Language::English => "Remove from Recent Files",
+            Language::Chinese => "从最近文件中移除",
+        }
+    }
+
+    pub fn clear_recent_files() -> &'static str {
+        match current_language() {
+            Language::English => "Clear Recent Files",
+            Language::Chinese => "清空最近文件",
+        }
+    }
+
     // ============ Welcome/Empty State ============
     pub fn welcome_title() -> &'static str {
         match current_language() {
