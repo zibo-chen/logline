@@ -46,14 +46,33 @@ fn main() -> eframe::Result<()> {
         egui::IconData::default()
     };
 
-    // Configure native options
+    // Configure native options with platform-specific titlebar settings
+    let mut viewport_builder = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_min_inner_size([800.0, 600.0])
+        .with_title("Logline - Log Viewer")
+        .with_taskbar(false) // Don't show in Dock/taskbar when window is hidden
+        .with_icon(icon);
+
+    // Platform-specific titlebar configuration
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: Use native titlebar with overlay style
+        // Content extends into titlebar area but native buttons remain visible
+        viewport_builder = viewport_builder
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        // Windows/Linux: Disable decorations to use custom titlebar
+        viewport_builder = viewport_builder.with_decorations(false);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_title("Logline - Log Viewer")
-            .with_taskbar(false) // Don't show in Dock/taskbar when window is hidden
-            .with_icon(icon),
+        viewport: viewport_builder,
         // Disable eframe's built-in persistence, we use our own config file
         persistence_path: None,
         ..Default::default()

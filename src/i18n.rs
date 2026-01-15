@@ -77,24 +77,24 @@ impl Translations {
         }
     }
 
-    pub fn pause() -> &'static str {
+    pub fn stop() -> &'static str {
         match current_language() {
-            Language::English => "Pause",
-            Language::Chinese => "暂停",
+            Language::English => "Stop",
+            Language::Chinese => "停止",
         }
     }
 
-    pub fn follow() -> &'static str {
+    pub fn start() -> &'static str {
         match current_language() {
-            Language::English => "Follow",
-            Language::Chinese => "跟随",
+            Language::English => "Start",
+            Language::Chinese => "开始",
         }
     }
 
-    pub fn toggle_auto_scroll_tooltip() -> &'static str {
+    pub fn toggle_monitoring_tooltip() -> &'static str {
         match current_language() {
-            Language::English => "Toggle auto-scroll (Space)",
-            Language::Chinese => "切换自动滚动 (Space)",
+            Language::English => "Start/Stop monitoring new logs (Space)",
+            Language::Chinese => "开始/停止监听新日志 (Space)",
         }
     }
 
@@ -128,15 +128,15 @@ impl Translations {
 
     pub fn newest_first() -> &'static str {
         match current_language() {
-            Language::English => "Newest First",
-            Language::Chinese => "最新优先",
+            Language::English => "Reverse",
+            Language::Chinese => "倒序",
         }
     }
 
     pub fn oldest_first() -> &'static str {
         match current_language() {
-            Language::English => "Oldest First",
-            Language::Chinese => "最旧优先",
+            Language::English => "Normal",
+            Language::Chinese => "正序",
         }
     }
 

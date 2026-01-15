@@ -8,6 +8,7 @@ use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
+use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel, OpenEditor};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
@@ -25,6 +26,9 @@ use crate::mcp::{McpConfig, McpServer};
 
 use anyhow::Result;
 use eframe::egui;
+use egui_desktop::{TitleBar, TitleBarOptions, ThemeMode};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use egui_desktop::render_resize_handles;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -42,6 +46,8 @@ pub struct LoglineApp {
 
     /// Search bar
     search_bar: SearchBar,
+    /// Application title bar with search
+    app_titlebar: AppTitleBar,
     /// Filter panel
     filter_panel: FilterPanel,
     /// Status bar
@@ -95,6 +101,10 @@ pub struct LoglineApp {
     // === Bookmarks Persistence ===
     /// Bookmarks storage
     bookmarks_store: BookmarksStore,
+
+    // === Custom Titlebar ===
+    /// Custom title bar for the window
+    title_bar: TitleBar,
 }
 
 impl LoglineApp {
@@ -193,6 +203,7 @@ impl LoglineApp {
                 manager
             },
             search_bar: SearchBar::new(),
+            app_titlebar: AppTitleBar::new(),
             filter_panel: FilterPanel::new(),
             status_bar: StatusBar::new(),
             toolbar_state: ToolbarState {
@@ -222,6 +233,16 @@ impl LoglineApp {
                 panel.set_dark_theme(config.theme == Theme::Dark);
                 panel
             },
+            // Custom titlebar - must be before config is moved
+            title_bar: TitleBar::new(
+                TitleBarOptions::new()
+                    .with_title("Logline")
+                    .with_theme_mode(if config.theme == Theme::Dark {
+                        ThemeMode::Dark
+                    } else {
+                        ThemeMode::Light
+                    }),
+            ),
             config,
             sidebar_visible: true,
             // MCP server
@@ -329,6 +350,12 @@ impl LoglineApp {
         // Scroll to bottom for new file
         if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
             state.main_view.scroll_to_bottom();
+        }
+
+        // Update toolbar state from the newly opened tab
+        if let Some(state) = self.tab_manager.states.get(&tab_id) {
+            self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
+            self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
         }
 
         self.status_bar
@@ -604,8 +631,16 @@ impl LoglineApp {
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.toggle_auto_scroll)) {
             if let Some(state) = self.tab_manager.get_active_state_mut() {
-                state.main_view.toggle_auto_scroll();
-                self.toolbar_state.auto_scroll = state.main_view.is_auto_scroll();
+                // Toggle monitoring state
+                if self.toolbar_state.auto_scroll {
+                    // Currently monitoring, stop it
+                    state.stop_monitoring();
+                    self.toolbar_state.auto_scroll = false;
+                } else {
+                    // Currently stopped, resume monitoring
+                    state.resume_monitoring();
+                    self.toolbar_state.auto_scroll = true;
+                }
             }
             return None;
         }
@@ -822,8 +857,16 @@ impl LoglineApp {
             }
             ToolbarAction::ToggleAutoScroll => {
                 if let Some(state) = self.tab_manager.get_active_state_mut() {
-                    state.main_view.toggle_auto_scroll();
-                    self.toolbar_state.auto_scroll = state.main_view.is_auto_scroll();
+                    // Toggle monitoring state
+                    if self.toolbar_state.auto_scroll {
+                        // Currently monitoring, stop it
+                        state.stop_monitoring();
+                        self.toolbar_state.auto_scroll = false;
+                    } else {
+                        // Currently stopped, resume monitoring
+                        state.resume_monitoring();
+                        self.toolbar_state.auto_scroll = true;
+                    }
                 }
                 None
             }
@@ -859,6 +902,12 @@ impl LoglineApp {
                 self.settings_panel.dark_theme = self.toolbar_state.dark_theme;
                 self.global_search_panel
                     .set_dark_theme(self.toolbar_state.dark_theme);
+                // Update titlebar theme
+                self.title_bar.update_theme_mode(if self.toolbar_state.dark_theme {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                });
                 let _ = self.config.save();
                 Some(AppAction::UpdateTheme)
             }
@@ -985,8 +1034,65 @@ impl eframe::App for LoglineApp {
         // Handle shortcuts
         let mut action = self.handle_shortcuts(ctx);
 
+        // === Application Title Bar (macOS) ===
+        #[cfg(target_os = "macos")]
+        {
+            // Show app title bar with search on macOS
+            let (search_query, should_toggle_maximize) = self.app_titlebar.show(ctx);
+            
+            if let Some(query) = search_query {
+                // Trigger search in active tab
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.filter.search.set_query(query);
+                    state.filter.search.search(&state.buffer);
+                    state.update_filter();
+                    // Open search bar to show results
+                    self.search_bar.visible = true;
+                    self.toolbar_state.search_visible = true;
+                }
+            }
+            
+            // Handle double-click to maximize/restore window
+            if should_toggle_maximize {
+                let is_maximized = ctx.input(|i| {
+                    i.viewport().maximized.unwrap_or(false)
+                });
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+            }
+        }
+
+        // === Custom Titlebar (Windows/Linux only) ===
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            // Render custom titlebar (handles window controls and drag)
+            self.title_bar.show(ctx);
+            
+            // Render resize handles for window resizing when decorations are disabled
+            render_resize_handles(ctx);
+        }
+
+        // Define toolbar colors based on theme
+        let is_dark = ctx.style().visuals.dark_mode;
+        let toolbar_bg = if is_dark {
+            egui::Color32::from_rgb(37, 37, 38)
+        } else {
+            egui::Color32::from_rgb(243, 243, 243)
+        };
+        let border_color = if is_dark {
+            egui::Color32::from_rgb(60, 60, 64)
+        } else {
+            egui::Color32::from_rgb(220, 220, 225)
+        };
+
         // Top panel with toolbar (including level filters)
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(toolbar_bg)
+                    .inner_margin(egui::Margin::symmetric(0, 6))
+                    .stroke(egui::Stroke::new(1.0, border_color)),
+            )
+            .show(ctx, |ui| {
             let filter_config = self.tab_manager.get_active_state_mut()
                 .map(|state| &mut state.filter.filter);
             let toolbar_action = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
@@ -1088,57 +1194,54 @@ impl eframe::App for LoglineApp {
         if !self.tab_manager.is_empty() {
             egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    // Tab bar takes most of the space
-                    let available_width = ui.available_width() - 60.0; // Reserve space for split buttons
-                    ui.allocate_ui(egui::vec2(available_width, ui.available_height()), |ui| {
-                        let tab_action = self.tab_manager.tab_bar.show(ui);
-                        match tab_action {
-                            TabBarAction::SelectTab(id) => {
-                                self.tab_manager.tab_bar.active_tab = Some(id);
-                                // If in split mode, also update the active pane's tab
-                                if self.tab_manager.is_split() {
-                                    self.tab_manager.split_view.set_active_tab(id);
-                                }
+                    // Tab bar takes full width
+                    let tab_action = self.tab_manager.tab_bar.show(ui);
+                    match tab_action {
+                        TabBarAction::SelectTab(id) => {
+                            self.tab_manager.tab_bar.active_tab = Some(id);
+                            // If in split mode, also update the active pane's tab
+                            if self.tab_manager.is_split() {
+                                self.tab_manager.split_view.set_active_tab(id);
                             }
-                            TabBarAction::CloseTab(id) => {
-                                // Handle split view tab close
-                                self.tab_manager.split_view.handle_tab_close(id);
-                                self.close_tab(id);
-                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                            // Update toolbar state from the newly selected tab
+                            if let Some(state) = self.tab_manager.states.get(&id) {
+                                self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
+                                self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
                             }
-                            TabBarAction::CloseOtherTabs(keep_id) => {
-                                self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
-                                // Also sync explorer panel
-                                self.sync_explorer_with_tabs();
-                                self.tab_manager.sync_split_with_tab_bar();
-                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
-                            }
-                            TabBarAction::CloseTabsToRight(id) => {
-                                self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
-                                self.sync_explorer_with_tabs();
-                                self.tab_manager.sync_split_with_tab_bar();
-                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
-                            }
-                            TabBarAction::CloseAllTabs => {
-                                self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
-                                self.explorer_panel.open_editors.clear();
-                                self.toolbar_state.split_view_active = false;
-                            }
-                            TabBarAction::ReorderTabs(from, to) => {
-                                self.tab_manager.tab_bar.reorder(from, to);
-                            }
-                            TabBarAction::OpenInSplit(id) => {
-                                self.tab_manager.enable_split(id);
-                                self.toolbar_state.split_view_active = true;
-                            }
-                            TabBarAction::None => {}
                         }
-                    });
-
-                    // Split view controls on the right
-                    let split_action = self.tab_manager.split_view.show_split_buttons(ui, self.tab_manager.len() >= 2);
-                    self.tab_manager.handle_split_action(split_action);
-                    self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                        TabBarAction::CloseTab(id) => {
+                            // Handle split view tab close
+                            self.tab_manager.split_view.handle_tab_close(id);
+                            self.close_tab(id);
+                            self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                        }
+                        TabBarAction::CloseOtherTabs(keep_id) => {
+                            self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
+                            // Also sync explorer panel
+                            self.sync_explorer_with_tabs();
+                            self.tab_manager.sync_split_with_tab_bar();
+                            self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                        }
+                        TabBarAction::CloseTabsToRight(id) => {
+                            self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
+                            self.sync_explorer_with_tabs();
+                            self.tab_manager.sync_split_with_tab_bar();
+                            self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                        }
+                        TabBarAction::CloseAllTabs => {
+                            self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
+                            self.explorer_panel.open_editors.clear();
+                            self.toolbar_state.split_view_active = false;
+                        }
+                        TabBarAction::ReorderTabs(from, to) => {
+                            self.tab_manager.tab_bar.reorder(from, to);
+                        }
+                        TabBarAction::OpenInSplit(id) => {
+                            self.tab_manager.enable_split(id);
+                            self.toolbar_state.split_view_active = true;
+                        }
+                        TabBarAction::None => {}
+                    }
                 });
             });
         }
@@ -1222,6 +1325,11 @@ impl eframe::App for LoglineApp {
                                         // Find and switch to the tab with this path
                                         if let Some(tab_id) = self.tab_manager.tab_bar.find_by_path(&path) {
                                             self.tab_manager.tab_bar.active_tab = Some(tab_id);
+                                            // Update toolbar state from the newly selected tab
+                                            if let Some(state) = self.tab_manager.states.get(&tab_id) {
+                                                self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
+                                                self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+                                            }
                                         }
                                     }
                                 }
@@ -1364,6 +1472,12 @@ impl eframe::App for LoglineApp {
                                     self.toolbar_state.dark_theme = dark;
                                     self.tab_manager.set_dark_theme(dark);
                                     self.global_search_panel.set_dark_theme(dark);
+                                    // Update titlebar theme
+                                    self.title_bar.update_theme_mode(if dark {
+                                        ThemeMode::Dark
+                                    } else {
+                                        ThemeMode::Light
+                                    });
                                     action = Some(AppAction::UpdateTheme);
                                     let _ = self.config.save();
                                 }
@@ -1440,6 +1554,11 @@ impl eframe::App for LoglineApp {
                                 self.tab_manager.split_view.set_active_pane(crate::ui::split_view::SplitPane::Left);
                                 if let Some(left_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Left) {
                                     self.tab_manager.tab_bar.active_tab = Some(left_id);
+                                    // Update toolbar state from the newly selected tab
+                                    if let Some(state) = self.tab_manager.states.get(&left_id) {
+                                        self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
+                                        self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+                                    }
                                 }
                             }
                         } else if let Some(right_rect) = right_rect_opt {
@@ -1448,6 +1567,11 @@ impl eframe::App for LoglineApp {
                                     self.tab_manager.split_view.set_active_pane(crate::ui::split_view::SplitPane::Right);
                                     if let Some(right_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Right) {
                                         self.tab_manager.tab_bar.active_tab = Some(right_id);
+                                        // Update toolbar state from the newly selected tab
+                                        if let Some(state) = self.tab_manager.states.get(&right_id) {
+                                            self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
+                                            self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+                                        }
                                     }
                                 }
                             }

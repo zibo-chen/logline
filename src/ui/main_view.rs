@@ -128,7 +128,27 @@ impl MainView {
         self.current_total_rows = total_rows;
 
         // Calculate target scroll offset if we need to scroll to a specific row
-        let mut scroll_to_y = self.scroll_to_row.take().map(|row| row as f32 * row_height);
+        let mut scroll_to_y = self.scroll_to_row.take().map(|buffer_idx| {
+            // Convert buffer_idx to display_row
+            let logical_row = if let Some(indices) = filtered_indices {
+                // Find the position of buffer_idx in filtered_indices
+                indices
+                    .iter()
+                    .position(|&idx| idx == buffer_idx)
+                    .unwrap_or(0)
+            } else {
+                buffer_idx
+            };
+
+            // In reverse order mode, flip the row index
+            let display_row = if self.virtual_scroll.state.reverse_order {
+                total_rows.saturating_sub(1).saturating_sub(logical_row)
+            } else {
+                logical_row
+            };
+
+            display_row as f32 * row_height
+        });
 
         // Track if this is a scroll to bottom operation
         let is_scroll_to_bottom = self.pending_scroll_to_bottom;
@@ -137,13 +157,40 @@ impl MainView {
         if self.pending_scroll_to_bottom {
             self.pending_scroll_to_bottom = false;
             if total_rows > 0 {
-                scroll_to_y = Some(total_rows.saturating_sub(1) as f32 * row_height);
+                // "Bottom" means the newest log (last buffer_idx), not the bottom of screen
+                // Find the last buffer_idx
+                let last_buffer_idx = if let Some(indices) = filtered_indices {
+                    indices.last().copied().unwrap_or(0)
+                } else {
+                    total_rows.saturating_sub(1)
+                };
+
+                // Convert to display row
+                let logical_row = if let Some(indices) = filtered_indices {
+                    indices
+                        .iter()
+                        .position(|&idx| idx == last_buffer_idx)
+                        .unwrap_or(0)
+                } else {
+                    last_buffer_idx
+                };
+
+                let display_row = if self.virtual_scroll.state.reverse_order {
+                    total_rows.saturating_sub(1).saturating_sub(logical_row)
+                } else {
+                    logical_row
+                };
+
+                scroll_to_y = Some(display_row as f32 * row_height);
             }
         }
 
         // When user scrolls to bottom, enable auto-scroll to follow new logs
         // When user scrolls to other positions, disable auto-scroll to view specific content
-        if is_scroll_to_bottom {
+        // Only enable auto-scroll when jumping to the location where new logs appear:
+        // - Normal mode: bottom is where new logs appear
+        // - Reverse mode: top (buffer_idx max) is where new logs appear, not bottom
+        if is_scroll_to_bottom && !self.virtual_scroll.state.reverse_order {
             self.virtual_scroll.state.auto_scroll = true;
         } else if scroll_to_y.is_some() {
             self.virtual_scroll.state.auto_scroll = false;
@@ -154,10 +201,18 @@ impl MainView {
             .id_salt(self.view_id)
             .auto_shrink([false, false]);
 
-        // Use stick_to_bottom when auto-scroll is enabled
-        // This prevents flickering by letting egui handle the scroll position
+        // Handle auto-scroll based on order mode
         if self.virtual_scroll.state.auto_scroll {
-            scroll_area = scroll_area.stick_to_bottom(true);
+            if self.virtual_scroll.state.reverse_order {
+                // In reverse mode, auto-scroll to top (row 0)
+                // Only set if no explicit scroll target
+                if scroll_to_y.is_none() {
+                    scroll_to_y = Some(0.0);
+                }
+            } else {
+                // In normal mode, use stick_to_bottom
+                scroll_area = scroll_area.stick_to_bottom(true);
+            }
         }
 
         // Apply scroll offset when explicitly requested
@@ -218,13 +273,21 @@ impl MainView {
 
             // Render visible rows
             let painter = ui.painter();
+            let reverse_order = self.virtual_scroll.state.reverse_order;
 
             for row_idx in start_row..end_row {
                 // Get the actual buffer index
-                let buffer_idx = if let Some(indices) = filtered_indices {
-                    indices.get(row_idx).copied()
+                // In reverse order mode, we need to flip the row index
+                let display_row = if reverse_order {
+                    total_rows.saturating_sub(1).saturating_sub(row_idx)
                 } else {
-                    Some(row_idx)
+                    row_idx
+                };
+
+                let buffer_idx = if let Some(indices) = filtered_indices {
+                    indices.get(display_row).copied()
+                } else {
+                    Some(display_row)
                 };
 
                 let Some(buffer_idx) = buffer_idx else {
@@ -242,9 +305,10 @@ impl MainView {
                 );
 
                 // Draw selection background (multi-line selection)
+                // selection_range stores logical rows, so we need to check display_row
                 let is_in_selection = self
                     .selection_range
-                    .map(|sel| sel.contains(row_idx))
+                    .map(|sel| sel.contains(display_row))
                     .unwrap_or(false);
 
                 if is_in_selection {
@@ -335,9 +399,16 @@ impl MainView {
                 if let Some(pos) = response.interact_pointer_pos() {
                     let clicked_row = ((pos.y - rect.min.y) / row_height).floor() as usize;
                     if clicked_row < total_rows {
+                        // In reverse order mode, flip the row index to get the correct logical row
+                        let logical_row = if reverse_order {
+                            total_rows.saturating_sub(1).saturating_sub(clicked_row)
+                        } else {
+                            clicked_row
+                        };
+
                         self.selection_range = Some(SelectionRange {
-                            start_row: clicked_row,
-                            end_row: clicked_row,
+                            start_row: logical_row,
+                            end_row: logical_row,
                             is_dragging: true,
                         });
                         self.selected_line = None;
@@ -352,9 +423,16 @@ impl MainView {
                     let current_row = current_row.max(0) as usize;
                     let current_row = current_row.min(total_rows.saturating_sub(1));
 
+                    // In reverse order mode, flip the row index to get the correct logical row
+                    let logical_row = if reverse_order {
+                        total_rows.saturating_sub(1).saturating_sub(current_row)
+                    } else {
+                        current_row
+                    };
+
                     if let Some(ref mut sel) = self.selection_range {
                         if sel.is_dragging {
-                            sel.end_row = current_row;
+                            sel.end_row = logical_row;
                         }
                     }
                 }
@@ -372,12 +450,19 @@ impl MainView {
                 if let Some(pos) = response.interact_pointer_pos() {
                     let clicked_row = ((pos.y - rect.min.y) / row_height).floor() as usize;
                     if clicked_row < total_rows {
+                        // In reverse order mode, flip the row index to get the correct logical row
+                        let logical_row = if reverse_order {
+                            total_rows.saturating_sub(1).saturating_sub(clicked_row)
+                        } else {
+                            clicked_row
+                        };
+
                         // Clear multi-line selection on single click
                         self.selection_range = None;
                         self.selected_line = if let Some(indices) = filtered_indices {
-                            indices.get(clicked_row).copied()
+                            indices.get(logical_row).copied()
                         } else {
-                            Some(clicked_row)
+                            Some(logical_row)
                         };
                     }
                 }
@@ -385,6 +470,17 @@ impl MainView {
 
             (response, total_rows)
         });
+
+        // In reverse mode, detect if user scrolled away from top to disable auto-scroll
+        // In normal mode, stick_to_bottom handles this automatically
+        if self.virtual_scroll.state.reverse_order && self.virtual_scroll.state.auto_scroll {
+            // Get the current scroll offset from the ScrollArea state
+            let current_offset = response.state.offset.y;
+            // If user scrolled away from top (offset > small threshold), disable auto-scroll
+            if current_offset > row_height * 0.5 {
+                self.virtual_scroll.state.auto_scroll = false;
+            }
+        }
 
         // Context menu
         let mut context_action = None;
@@ -470,8 +566,9 @@ impl MainView {
         self.selected_line = Some(line_index);
     }
 
-    /// Scroll to top
+    /// Scroll to top (first log entry, line number 1)
     pub fn scroll_to_top(&mut self) {
+        // Jump to buffer_idx 0 (line number 1, oldest log)
         self.scroll_to_row = Some(0);
     }
 
@@ -479,11 +576,6 @@ impl MainView {
     pub fn scroll_to_bottom(&mut self) {
         // Use pending flag so we can use actual total_rows in show()
         self.pending_scroll_to_bottom = true;
-    }
-
-    /// Toggle auto-scroll
-    pub fn toggle_auto_scroll(&mut self) {
-        self.virtual_scroll.state.toggle_auto_scroll();
     }
 
     /// Check if auto-scroll is enabled

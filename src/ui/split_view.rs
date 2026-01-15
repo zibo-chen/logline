@@ -51,11 +51,6 @@ impl Default for SplitViewConfig {
 pub enum SplitAction {
     /// No action
     None,
-    /// Enable split view with the specified tab in the right pane
-    EnableSplit(TabId),
-    /// Disable split view (close right pane)
-    DisableSplit,
-
     /// Split ratio changed
     SplitRatioChanged(f32),
 }
@@ -280,50 +275,5 @@ impl SplitView {
         // a tab or uses keyboard shortcuts.
 
         (left_rect, Some(right_rect), action)
-    }
-
-    /// Show the split view control buttons (for tab bar)
-    pub fn show_split_buttons(&mut self, ui: &mut Ui, has_multiple_tabs: bool) -> SplitAction {
-        let mut action = SplitAction::None;
-
-        ui.horizontal(|ui| {
-            let button_color = if self.dark_theme {
-                Color32::from_rgb(180, 180, 180)
-            } else {
-                Color32::from_rgb(80, 80, 80)
-            };
-
-            // Split toggle button
-            if self.config.is_split {
-                // Close split button
-                let close_split = ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("⬚").color(button_color))
-                            .frame(false)
-                            .min_size(Vec2::new(24.0, 24.0)),
-                    )
-                    .on_hover_text("关闭分屏");
-
-                if close_split.clicked() {
-                    action = SplitAction::DisableSplit;
-                }
-            } else if has_multiple_tabs {
-                // Open split button (only show if there are multiple tabs)
-                let open_split = ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("⬓").color(button_color))
-                            .frame(false)
-                            .min_size(Vec2::new(24.0, 24.0)),
-                    )
-                    .on_hover_text("分屏显示");
-
-                if open_split.clicked() {
-                    // Signal that we want to split - the caller should determine which tab to use
-                    action = SplitAction::EnableSplit(0); // Placeholder, caller should update
-                }
-            }
-        });
-
-        action
     }
 }

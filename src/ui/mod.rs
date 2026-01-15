@@ -2,6 +2,7 @@
 
 pub mod activity_bar;
 pub mod advanced_filters_panel;
+pub mod app_titlebar;
 pub mod bookmarks_panel;
 pub mod explorer_panel;
 pub mod file_picker_dialog;

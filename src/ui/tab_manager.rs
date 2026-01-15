@@ -303,6 +303,43 @@ impl TabState {
         self.watcher.is_some()
     }
 
+    /// Stop monitoring (stop reading new logs but keep watcher)
+    pub fn stop_monitoring(&mut self) {
+        if let Some(tx) = &self.reader_tx {
+            let _ = tx.send(ReaderCommand::Stop);
+        }
+    }
+
+    /// Resume monitoring (restart reader thread)
+    pub fn resume_monitoring(&mut self) {
+        if self.watcher.is_none() {
+            return;
+        }
+
+        // Restart background reader thread
+        let (msg_tx, msg_rx) = bounded::<ReaderMessage>(1000);
+        let (cmd_tx, cmd_rx) = bounded::<ReaderCommand>(10);
+
+        let reader_path = self.path.clone();
+        let reader_offset = self.reader.as_ref().map(|r| r.offset()).unwrap_or(0);
+        let reader_line_count = self.reader.as_ref().map(|r| r.line_count()).unwrap_or(0);
+        let reader_encoding = self.encoding;
+
+        thread::spawn(move || {
+            Self::reader_thread(
+                reader_path,
+                reader_offset,
+                reader_line_count,
+                reader_encoding,
+                msg_tx,
+                cmd_rx,
+            );
+        });
+
+        self.reader_rx = Some(msg_rx);
+        self.reader_tx = Some(cmd_tx);
+    }
+
     /// Set theme for main view
     pub fn set_dark_theme(&mut self, dark: bool) {
         self.main_view.set_dark_theme(dark);
@@ -479,11 +516,6 @@ impl TabManager {
         self.states.values().any(|s| s.is_watching())
     }
 
-    /// Get the number of open tabs
-    pub fn len(&self) -> usize {
-        self.tab_bar.len()
-    }
-
     /// Check if there are no tabs
     pub fn is_empty(&self) -> bool {
         self.tab_bar.is_empty()
@@ -633,12 +665,6 @@ impl TabManager {
     /// Handle split action
     pub fn handle_split_action(&mut self, action: SplitAction) {
         match action {
-            SplitAction::EnableSplit(tab_id) => {
-                self.enable_split(tab_id);
-            }
-            SplitAction::DisableSplit => {
-                self.disable_split();
-            }
             SplitAction::SplitRatioChanged(_) => {
                 // Ratio is already updated in split_view
             }

@@ -274,11 +274,7 @@ impl TabBar {
                 )
             };
 
-        // Draw tab bar background
         let available_width = ui.available_width();
-        let (bar_rect, _) =
-            ui.allocate_exact_size(Vec2::new(available_width, tab_height), Sense::hover());
-        ui.painter().rect_filled(bar_rect, 0.0, bg_color);
 
         // Calculate individual tab widths based on content
         let font_id = egui::FontId::proportional(12.0);
@@ -293,224 +289,241 @@ impl TabBar {
                 tab.name.clone()
             };
 
-            let galley = ui
-                .painter()
-                .layout_no_wrap(display_name, font_id.clone(), text_color);
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(display_name.clone(), font_id.clone(), text_color);
             let text_width = galley.size().x;
             let desired_width = (text_width + padding).clamp(tab_min_width, tab_max_width);
             tab_widths.push(desired_width);
             total_desired_width += desired_width + 2.0; // +2 for spacing
         }
 
-        // If total desired width exceeds available space, scale down proportionally
-        let available_for_tabs = available_width - 8.0;
-        if total_desired_width > available_for_tabs {
-            let scale = available_for_tabs / total_desired_width;
-            for width in &mut tab_widths {
-                *width = (*width * scale).max(tab_min_width);
-            }
-        }
-
-        // Track drop position for drag-and-drop
-        let mut drop_index: Option<usize> = None;
-        let mut current_x = bar_rect.min.x + 4.0;
-
-        // Draw tabs
-        for (index, tab) in self.tabs.iter().enumerate() {
-            let is_active = self.active_tab == Some(tab.id);
-            let tab_width = tab_widths[index];
-            let tab_rect = Rect::from_min_size(
-                egui::pos2(current_x, bar_rect.min.y + 2.0),
-                Vec2::new(tab_width - 2.0, tab_height - 4.0),
-            );
-
-            // Tab background
-            let bg = if is_active { active_bg } else { inactive_bg };
-            ui.painter().rect_filled(tab_rect, 4.0, bg);
-            ui.painter().rect_stroke(
-                tab_rect,
-                4.0,
-                Stroke::new(1.0, border_color),
-                egui::StrokeKind::Inside,
-            );
-
-            // Active indicator (bottom border)
-            if is_active {
-                let indicator_rect = Rect::from_min_size(
-                    egui::pos2(tab_rect.min.x, tab_rect.max.y - 2.0),
-                    Vec2::new(tab_rect.width(), 2.0),
+        // Use horizontal scroll area
+        egui::ScrollArea::horizontal()
+            .id_salt("tab_bar_scroll")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+            .show(ui, |ui| {
+                // Draw tab bar background
+                let (bar_rect, _) = ui.allocate_exact_size(
+                    Vec2::new(total_desired_width.max(available_width), tab_height),
+                    Sense::hover(),
                 );
-                ui.painter()
-                    .rect_filled(indicator_rect, 0.0, Color32::from_rgb(0, 122, 204));
-            }
+                ui.painter().rect_filled(bar_rect, 0.0, bg_color);
 
-            // Icon
-            let icon = if tab.is_remote { "📡" } else { "📄" };
-            let icon_pos = egui::pos2(tab_rect.min.x + 8.0, tab_rect.center().y);
-            ui.painter().text(
-                icon_pos,
-                egui::Align2::LEFT_CENTER,
-                icon,
-                egui::FontId::proportional(12.0),
-                text_color,
-            );
+                // Track drop position for drag-and-drop
+                let mut drop_index: Option<usize> = None;
+                let mut current_x = bar_rect.min.x + 4.0;
 
-            // Tab name with dirty indicator
-            let display_name = if tab.is_dirty {
-                format!("● {}", tab.name)
-            } else {
-                tab.name.clone()
-            };
+                // Draw tabs
+                for (index, tab) in self.tabs.iter().enumerate() {
+                    let is_active = self.active_tab == Some(tab.id);
+                    let tab_width = tab_widths[index];
+                    let tab_rect = Rect::from_min_size(
+                        egui::pos2(current_x, bar_rect.min.y + 2.0),
+                        Vec2::new(tab_width - 2.0, tab_height - 4.0),
+                    );
 
-            // Truncate name if too long - force single line
-            let max_name_width = tab_width - 50.0; // Leave room for icon and close button
-            let text_color_for_tab = if is_active { text_color } else { text_inactive };
+                    // Tab background
+                    let bg = if is_active { active_bg } else { inactive_bg };
+                    ui.painter().rect_filled(tab_rect, 4.0, bg);
+                    ui.painter().rect_stroke(
+                        tab_rect,
+                        4.0,
+                        Stroke::new(1.0, border_color),
+                        egui::StrokeKind::Inside,
+                    );
 
-            // Manually truncate text to prevent wrapping
-            let font_id = egui::FontId::proportional(12.0);
-            let truncated_text =
-                truncate_text_to_width(ui, &display_name, &font_id, max_name_width);
-
-            let text_pos = egui::pos2(tab_rect.min.x + 26.0, tab_rect.center().y);
-            ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_CENTER,
-                truncated_text,
-                font_id,
-                text_color_for_tab,
-            );
-
-            // Close button
-            let close_rect = Rect::from_center_size(
-                egui::pos2(tab_rect.max.x - 14.0, tab_rect.center().y),
-                Vec2::splat(close_button_size),
-            );
-
-            let close_response =
-                ui.interact(close_rect, ui.id().with(("close", tab.id)), Sense::click());
-            let close_hovered = close_response.hovered();
-
-            if close_hovered {
-                self.hovered_close = Some(tab.id);
-                ui.painter().rect_filled(
-                    close_rect,
-                    4.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                );
-            }
-
-            ui.painter().text(
-                close_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "×",
-                egui::FontId::proportional(14.0),
-                if close_hovered {
-                    text_color
-                } else {
-                    text_inactive
-                },
-            );
-
-            if close_response.clicked() {
-                action = TabBarAction::CloseTab(tab.id);
-            }
-
-            // Tab click (excluding close button area)
-            let tab_click_rect = Rect::from_min_max(
-                tab_rect.min,
-                egui::pos2(tab_rect.max.x - close_button_size - 4.0, tab_rect.max.y),
-            );
-            let tab_response = ui.interact(
-                tab_click_rect,
-                ui.id().with(("tab", tab.id)),
-                Sense::click_and_drag(),
-            );
-
-            // Show tooltip - on_hover_text returns Self so we reassign
-            let tab_response = tab_response.on_hover_text(&tab.tooltip);
-
-            if tab_response.clicked() {
-                action = TabBarAction::SelectTab(tab.id);
-            }
-
-            // Context menu
-            tab_response.context_menu(|ui| {
-                ui.set_min_width(150.0);
-
-                if ui.button(I18n::close()).clicked() {
-                    action = TabBarAction::CloseTab(tab.id);
-                    ui.close();
-                }
-
-                if ui.button(I18n::close_others()).clicked() {
-                    action = TabBarAction::CloseOtherTabs(tab.id);
-                    ui.close();
-                }
-
-                if ui.button(I18n::close_tabs_to_right()).clicked() {
-                    action = TabBarAction::CloseTabsToRight(tab.id);
-                    ui.close();
-                }
-
-                ui.separator();
-
-                // Split view options
-                if ui.button(I18n::open_in_split()).clicked() {
-                    action = TabBarAction::OpenInSplit(tab.id);
-                    ui.close();
-                }
-
-                ui.separator();
-
-                if ui.button(I18n::close_all()).clicked() {
-                    action = TabBarAction::CloseAllTabs;
-                    ui.close();
-                }
-            });
-
-            // Handle drag for reordering
-            if tab_response.drag_started() {
-                self.dragging = Some((index, current_x));
-            }
-
-            if let Some((drag_index, _)) = self.dragging {
-                if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
-                    if pointer_pos.x >= tab_rect.min.x && pointer_pos.x < tab_rect.max.x {
-                        drop_index = Some(index);
+                    // Active indicator (bottom border)
+                    if is_active {
+                        let indicator_rect = Rect::from_min_size(
+                            egui::pos2(tab_rect.min.x, tab_rect.max.y - 2.0),
+                            Vec2::new(tab_rect.width(), 2.0),
+                        );
+                        ui.painter().rect_filled(
+                            indicator_rect,
+                            0.0,
+                            Color32::from_rgb(0, 122, 204),
+                        );
                     }
-                }
 
-                if tab_response.drag_stopped() {
-                    if let Some(target) = drop_index {
-                        if drag_index != target {
-                            action = TabBarAction::ReorderTabs(drag_index, target);
+                    // Icon
+                    let icon = if tab.is_remote { "📡" } else { "📄" };
+                    let icon_pos = egui::pos2(tab_rect.min.x + 8.0, tab_rect.center().y);
+                    ui.painter().text(
+                        icon_pos,
+                        egui::Align2::LEFT_CENTER,
+                        icon,
+                        egui::FontId::proportional(12.0),
+                        text_color,
+                    );
+
+                    // Tab name with dirty indicator
+                    let display_name = if tab.is_dirty {
+                        format!("● {}", tab.name)
+                    } else {
+                        tab.name.clone()
+                    };
+
+                    // Truncate name if too long - force single line
+                    let max_name_width = tab_width - 50.0; // Leave room for icon and close button
+                    let text_color_for_tab = if is_active { text_color } else { text_inactive };
+
+                    // Manually truncate text to prevent wrapping
+                    let font_id = egui::FontId::proportional(12.0);
+                    let truncated_text =
+                        truncate_text_to_width(ui, &display_name, &font_id, max_name_width);
+
+                    let text_pos = egui::pos2(tab_rect.min.x + 26.0, tab_rect.center().y);
+                    ui.painter().text(
+                        text_pos,
+                        egui::Align2::LEFT_CENTER,
+                        truncated_text,
+                        font_id,
+                        text_color_for_tab,
+                    );
+
+                    // Close button
+                    let close_rect = Rect::from_center_size(
+                        egui::pos2(tab_rect.max.x - 14.0, tab_rect.center().y),
+                        Vec2::splat(close_button_size),
+                    );
+
+                    let close_response =
+                        ui.interact(close_rect, ui.id().with(("close", tab.id)), Sense::click());
+                    let close_hovered = close_response.hovered();
+
+                    if close_hovered {
+                        self.hovered_close = Some(tab.id);
+                        ui.painter().rect_filled(
+                            close_rect,
+                            4.0,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                        );
+                    }
+
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "×",
+                        egui::FontId::proportional(14.0),
+                        if close_hovered {
+                            text_color
+                        } else {
+                            text_inactive
+                        },
+                    );
+
+                    if close_response.clicked() {
+                        action = TabBarAction::CloseTab(tab.id);
+                    }
+
+                    // Tab click (excluding close button area)
+                    let tab_click_rect = Rect::from_min_max(
+                        tab_rect.min,
+                        egui::pos2(tab_rect.max.x - close_button_size - 4.0, tab_rect.max.y),
+                    );
+                    let tab_response = ui.interact(
+                        tab_click_rect,
+                        ui.id().with(("tab", tab.id)),
+                        Sense::click_and_drag(),
+                    );
+
+                    // Show tooltip - on_hover_text returns Self so we reassign
+                    let tab_response = tab_response.on_hover_text(&tab.tooltip);
+
+                    if tab_response.clicked() {
+                        action = TabBarAction::SelectTab(tab.id);
+                    }
+
+                    // Context menu
+                    tab_response.context_menu(|ui| {
+                        ui.set_min_width(150.0);
+
+                        if ui.button(I18n::close()).clicked() {
+                            action = TabBarAction::CloseTab(tab.id);
+                            ui.close();
+                        }
+
+                        if ui.button(I18n::close_others()).clicked() {
+                            action = TabBarAction::CloseOtherTabs(tab.id);
+                            ui.close();
+                        }
+
+                        if ui.button(I18n::close_tabs_to_right()).clicked() {
+                            action = TabBarAction::CloseTabsToRight(tab.id);
+                            ui.close();
+                        }
+
+                        ui.separator();
+
+                        // Split view options
+                        if ui.button(I18n::open_in_split()).clicked() {
+                            action = TabBarAction::OpenInSplit(tab.id);
+                            ui.close();
+                        }
+
+                        ui.separator();
+
+                        if ui.button(I18n::close_all()).clicked() {
+                            action = TabBarAction::CloseAllTabs;
+                            ui.close();
+                        }
+                    });
+
+                    // Handle drag for reordering
+                    if tab_response.drag_started() {
+                        self.dragging = Some((index, current_x));
+                    }
+
+                    if let Some((drag_index, _)) = self.dragging {
+                        if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
+                            let tab_center = tab_rect.center().x;
+                            // Determine drop position based on pointer position relative to tab center
+                            if drag_index < index {
+                                // Dragging from left to right
+                                if pointer_pos.x > tab_center {
+                                    drop_index = Some(index);
+                                }
+                            } else if drag_index > index {
+                                // Dragging from right to left
+                                if pointer_pos.x < tab_center {
+                                    drop_index = Some(index);
+                                }
+                            }
+                        }
+
+                        if tab_response.drag_stopped() {
+                            if let Some(target) = drop_index {
+                                if drag_index != target {
+                                    action = TabBarAction::ReorderTabs(drag_index, target);
+                                }
+                            }
+                            self.dragging = None;
                         }
                     }
-                    self.dragging = None;
+
+                    // Move to next tab position
+                    current_x += tab_width + 2.0;
                 }
-            }
 
-            // Move to next tab position
-            current_x += tab_width + 2.0;
-        }
-
-        // Draw drop indicator
-        if let (Some((drag_index, _)), Some(target)) = (self.dragging, drop_index) {
-            if drag_index != target {
-                // Calculate target position based on accumulated tab widths
-                let indicator_x = bar_rect.min.x
-                    + 4.0
-                    + tab_widths[..target].iter().sum::<f32>()
-                    + (target as f32 * 2.0);
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(indicator_x, bar_rect.min.y + 4.0),
-                        egui::pos2(indicator_x, bar_rect.max.y - 4.0),
-                    ],
-                    Stroke::new(2.0, Color32::from_rgb(0, 122, 204)),
-                );
-            }
-        }
+                // Draw drop indicator
+                if let (Some((drag_index, _)), Some(target)) = (self.dragging, drop_index) {
+                    if drag_index != target {
+                        // Calculate target position based on accumulated tab widths
+                        let indicator_x = bar_rect.min.x
+                            + 4.0
+                            + tab_widths[..target].iter().sum::<f32>()
+                            + (target as f32 * 2.0);
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(indicator_x, bar_rect.min.y + 4.0),
+                                egui::pos2(indicator_x, bar_rect.max.y - 4.0),
+                            ],
+                            Stroke::new(2.0, Color32::from_rgb(0, 122, 204)),
+                        );
+                    }
+                }
+            });
 
         action
     }

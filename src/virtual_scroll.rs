@@ -149,21 +149,6 @@ impl VirtualScrollState {
         self.first_visible_row = 0;
     }
 
-    /// Scroll to bottom
-    pub fn scroll_to_bottom(&mut self) {
-        self.auto_scroll = true;
-        let max_scroll = (self.content_height - self.viewport_height).max(0.0);
-        self.scroll_offset = max_scroll;
-    }
-
-    /// Toggle auto-scroll
-    pub fn toggle_auto_scroll(&mut self) {
-        self.auto_scroll = !self.auto_scroll;
-        if self.auto_scroll {
-            self.scroll_to_bottom();
-        }
-    }
-
     /// Toggle reverse order
     pub fn toggle_reverse_order(&mut self) {
         self.reverse_order = !self.reverse_order;
