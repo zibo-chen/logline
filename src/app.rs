@@ -26,6 +26,7 @@ use crate::mcp::{McpConfig, McpServer};
 
 use anyhow::Result;
 use eframe::egui;
+use egui::RichText;
 use egui_desktop::{TitleBar, TitleBarOptions, ThemeMode};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use egui_desktop::render_resize_handles;
@@ -1603,17 +1604,134 @@ impl eframe::App for LoglineApp {
                         self.handle_context_menu_action(ctx_action, ctx.clone());
                     }
                 } else {
-                    // No tab open - show welcome message
-                    ui.centered_and_justified(|ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(100.0);
-                            ui.heading(t::no_open_tabs());
-                            ui.add_space(20.0);
-                            if ui.button("📁 打开文件").clicked() {
-                                self.file_picker_dialog.show_dialog();
-                            }
+                    // No tab open - show welcome message with hints
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(40.0);
+                                
+                                // Main title
+                                ui.heading(RichText::new(t::welcome_title()).size(32.0).strong());
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(t::no_open_tabs()).size(15.0).weak());
+                                ui.add_space(30.0);
+                                
+                                // Open file button
+                                let button = egui::Button::new(RichText::new("📁 打开文件").size(16.0))
+                                    .min_size(egui::vec2(180.0, 40.0));
+                                if ui.add(button).clicked() {
+                                    self.file_picker_dialog.show_dialog();
+                                }
+                                
+                                ui.add_space(40.0);
+                                
+                                // Hints section - use horizontal layout with equal height panels
+                                ui.horizontal_top(|ui| {
+                                    // Calculate available width for centering
+                                    let available_width = ui.available_width();
+                                    let panel_width = 350.0;
+                                    let spacing = 20.0;
+                                    let total_content_width = panel_width * 2.0 + spacing;
+                                    let left_margin = ((available_width - total_content_width) / 2.0).max(20.0);
+                                    
+                                    ui.add_space(left_margin);
+                                    
+                                    // Keyboard shortcuts panel
+                                    ui.vertical(|ui| {
+                                        ui.group(|ui| {
+                                            ui.set_width(panel_width);
+                                            ui.vertical(|ui| {
+                                                ui.add_space(12.0);
+                                                ui.label(RichText::new(t::keyboard_shortcuts_title()).strong().size(16.0));
+                                                ui.add_space(16.0);
+                                                
+                                                // Shortcuts list with consistent spacing
+                                                let shortcuts = [
+                                                    t::shortcut_open_file(),
+                                                    t::shortcut_find(),
+                                                    t::shortcut_goto_line(),
+                                                    t::shortcut_reload(),
+                                                    t::shortcut_clear(),
+                                                    t::shortcut_bookmark(),
+                                                    t::shortcut_auto_scroll(),
+                                                ];
+                                                
+                                                for shortcut in shortcuts {
+                                                    ui.label(RichText::new(shortcut).size(14.0));
+                                                    ui.add_space(8.0);
+                                                }
+                                                
+                                                ui.add_space(4.0);
+                                            });
+                                        });
+                                    });
+                                    
+                                    ui.add_space(spacing);
+                                    
+                                    // Agent usage panel
+                                    ui.vertical(|ui| {
+                                        ui.group(|ui| {
+                                            ui.set_width(panel_width);
+                                            ui.vertical(|ui| {
+                                                ui.add_space(12.0);
+                                                ui.label(RichText::new(t::agent_usage_title()).strong().size(16.0));
+                                                ui.add_space(16.0);
+                                                
+                                                // Show local IP addresses if server is running
+                                                if self.remote_server.is_running() {
+                                                    ui.label(RichText::new(t::local_network_addresses()).size(14.0).strong());
+                                                    ui.add_space(6.0);
+                                                    
+                                                    let local_ips = crate::remote_server::get_local_ip_addresses();
+                                                    let port = self.remote_server.port();
+                                                    
+                                                    if local_ips.is_empty() {
+                                                        ui.label(RichText::new(format!("  127.0.0.1:{}", port)).size(13.0).monospace());
+                                                    } else {
+                                                        for ip in local_ips {
+                                                            ui.label(RichText::new(format!("  {}:{}", ip, port)).size(13.0).monospace());
+                                                        }
+                                                    }
+                                                    ui.add_space(12.0);
+                                                }
+                                                
+                                                ui.label(RichText::new(t::agent_install_command()).size(14.0));
+                                                ui.add_space(6.0);
+                                                egui::ScrollArea::horizontal()
+                                                    .id_salt("agent_install_scroll")
+                                                    .auto_shrink([false, true])
+                                                    .show(ui, |ui| {
+                                                        ui.code("cargo install --git https://github.com/zibo-chen/logline-agent");
+                                                    });
+                                                
+                                                ui.add_space(12.0);
+                                                ui.label(RichText::new(t::agent_basic_usage()).size(14.0));
+                                                ui.add_space(6.0);
+                                                egui::ScrollArea::horizontal()
+                                                    .id_salt("agent_usage_scroll")
+                                                    .auto_shrink([false, true])
+                                                    .show(ui, |ui| {
+                                                        ui.vertical(|ui| {
+                                                            ui.code("logline-agent --name \"my-service\" \\");
+                                                            ui.code("  --server \"<IP>:12500\" \\");
+                                                            ui.code("  --file \"/var/log/app.log\"");
+                                                        });
+                                                    });
+                                                
+                                                ui.add_space(12.0);
+                                                ui.label(RichText::new(t::agent_server_address()).weak().size(13.0));
+                                                ui.add_space(6.0);
+                                                ui.label(RichText::new(t::agent_more_info()).weak().size(13.0));
+                                                ui.add_space(4.0);
+                                            });
+                                        });
+                                    });
+                                });
+                                
+                                ui.add_space(40.0);
+                            });
                         });
-                    });
                 }
             }
         });

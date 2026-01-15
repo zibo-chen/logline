@@ -68,6 +68,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Custom titlebar support
 egui-desktop = "0.2"
 
+# Network interface information (cross-platform)
+if-addrs = "0.13"
+
 [dev-dependencies]
 tempfile = "3"
 

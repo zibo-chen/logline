@@ -584,6 +584,56 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
+/// Get local network interface IP addresses (cross-platform)
+pub fn get_local_ip_addresses() -> Vec<String> {
+    let mut ips = Vec::new();
+
+    // Try to get all network interfaces using if-addrs (works on Windows, macOS, Linux)
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            // Skip loopback interfaces
+            if !iface.is_loopback() {
+                match iface.addr {
+                    if_addrs::IfAddr::V4(addr) => {
+                        ips.push(addr.ip.to_string());
+                    }
+                    if_addrs::IfAddr::V6(addr) => {
+                        // Optionally include IPv6 addresses
+                        // For now, we'll skip them to keep it simple
+                        let ip = addr.ip;
+                        // Only include link-local or global IPv6 addresses
+                        if !ip.is_loopback() && !ip.is_unspecified() {
+                            ips.push(format!("[{}]", ip));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: try to get the primary IP by connecting to an external address
+    // This works even if if-addrs fails
+    if ips.is_empty() {
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            // Connect to a public DNS server (doesn't actually send data)
+            if socket.connect("8.8.8.8:80").is_ok() {
+                if let Ok(addr) = socket.local_addr() {
+                    let ip_str = addr.ip().to_string();
+                    if !ip_str.starts_with("127.") {
+                        ips.push(ip_str);
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove duplicates and sort
+    ips.sort();
+    ips.dedup();
+
+    ips
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +644,14 @@ mod tests {
         assert_eq!(sanitize_filename("test/project"), "test_project");
         assert_eq!(sanitize_filename("test project"), "test_project");
         assert_eq!(sanitize_filename("test.project"), "test_project");
+    }
+
+    #[test]
+    fn test_get_local_ip_addresses() {
+        let ips = get_local_ip_addresses();
+        // Should have at least one non-loopback IP or be empty
+        for ip in &ips {
+            assert!(!ip.starts_with("127."));
+        }
     }
 }

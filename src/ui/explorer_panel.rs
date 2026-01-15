@@ -35,18 +35,6 @@ impl ExplorerPanel {
         self.remote_streams = streams;
     }
 
-    /// Add to recent files
-    pub fn add_recent_file(&mut self, path: PathBuf) {
-        // Remove if exists
-        self.local_files.retain(|p| p != &path);
-
-        // Add to front
-        self.local_files.insert(0, path);
-
-        // Keep only last 10
-        self.local_files.truncate(10);
-    }
-
     /// Render the explorer panel
     pub fn show(&mut self, ui: &mut Ui) -> ExplorerAction {
         let mut action = ExplorerAction::None;

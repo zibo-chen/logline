@@ -219,11 +219,6 @@ impl TabBar {
         Some(tab)
     }
 
-    /// Get a tab by ID
-    pub fn get_tab(&self, id: TabId) -> Option<&Tab> {
-        self.tabs.iter().find(|t| t.id == id)
-    }
-
     /// Check if a path is already open
     pub fn find_by_path(&self, path: &PathBuf) -> Option<TabId> {
         self.tabs.iter().find(|t| &t.path == path).map(|t| t.id)

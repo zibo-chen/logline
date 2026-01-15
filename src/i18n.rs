@@ -425,20 +425,6 @@ impl Translations {
     }
 
     // ============ Explorer Panel ============
-    pub fn open_editors() -> &'static str {
-        match current_language() {
-            Language::English => "OPEN EDITORS",
-            Language::Chinese => "已打开",
-        }
-    }
-
-    pub fn no_open_files() -> &'static str {
-        match current_language() {
-            Language::English => "No open files",
-            Language::Chinese => "无打开的文件",
-        }
-    }
-
     pub fn remote_streams() -> &'static str {
         match current_language() {
             Language::English => "REMOTE STREAMS",
@@ -1087,6 +1073,112 @@ impl Translations {
         match current_language() {
             Language::English => "Open in Split View",
             Language::Chinese => "在分屏中打开",
+        }
+    }
+
+    // ============ Welcome/Empty State ============
+    pub fn welcome_title() -> &'static str {
+        match current_language() {
+            Language::English => "Welcome to Logline",
+            Language::Chinese => "欢迎使用 Logline",
+        }
+    }
+
+    pub fn keyboard_shortcuts_title() -> &'static str {
+        match current_language() {
+            Language::English => "⌨ Keyboard Shortcuts",
+            Language::Chinese => "⌨ 快捷键",
+        }
+    }
+
+    pub fn shortcut_open_file() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+O - Open file",
+            Language::Chinese => "Cmd+O - 打开文件",
+        }
+    }
+
+    pub fn shortcut_find() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+F - Search in file",
+            Language::Chinese => "Cmd+F - 文件内搜索",
+        }
+    }
+
+    pub fn shortcut_goto_line() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+G - Go to line",
+            Language::Chinese => "Cmd+G - 跳转到行",
+        }
+    }
+
+    pub fn shortcut_reload() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+Shift+R - Reload file",
+            Language::Chinese => "Cmd+Shift+R - 重新加载文件",
+        }
+    }
+
+    pub fn shortcut_clear() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+L - Clear buffer",
+            Language::Chinese => "Cmd+L - 清空缓冲区",
+        }
+    }
+
+    pub fn shortcut_bookmark() -> &'static str {
+        match current_language() {
+            Language::English => "Cmd+B - Toggle bookmark",
+            Language::Chinese => "Cmd+B - 切换书签",
+        }
+    }
+
+    pub fn shortcut_auto_scroll() -> &'static str {
+        match current_language() {
+            Language::English => "Space - Toggle auto-scroll",
+            Language::Chinese => "Space - 切换自动滚动",
+        }
+    }
+
+    pub fn agent_usage_title() -> &'static str {
+        match current_language() {
+            Language::English => "🔧 Remote Agent Usage",
+            Language::Chinese => "🔧 远程 Agent 使用方式",
+        }
+    }
+
+    pub fn agent_install_command() -> &'static str {
+        match current_language() {
+            Language::English => "Install:",
+            Language::Chinese => "安装：",
+        }
+    }
+
+    pub fn agent_basic_usage() -> &'static str {
+        match current_language() {
+            Language::English => "Basic usage:",
+            Language::Chinese => "基本用法：",
+        }
+    }
+
+    pub fn agent_server_address() -> &'static str {
+        match current_language() {
+            Language::English => "Default server port: 12500",
+            Language::Chinese => "默认服务器端口：12500",
+        }
+    }
+
+    pub fn local_network_addresses() -> &'static str {
+        match current_language() {
+            Language::English => "Local network addresses (for agent connection):",
+            Language::Chinese => "本地网络地址（用于 Agent 连接）：",
+        }
+    }
+
+    pub fn agent_more_info() -> &'static str {
+        match current_language() {
+            Language::English => "More info: github.com/zibo-chen/logline-agent",
+            Language::Chinese => "更多信息：github.com/zibo-chen/logline-agent",
         }
     }
 }
