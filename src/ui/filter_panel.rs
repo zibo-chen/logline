@@ -22,59 +22,14 @@ impl FilterPanel {
         }
     }
 
-    /// Show the filter panel
+    /// Show the filter panel (only when expanded for advanced filters)
     pub fn show(&mut self, ui: &mut Ui, filter: &mut FilterConfig) -> bool {
         let mut changed = false;
 
-        // Compact level filters (always visible)
-        ui.horizontal(|ui| {
-            ui.label(t::levels());
-            
-            for level in [
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Info,
-                LogLevel::Warn,
-                LogLevel::Error,
-                LogLevel::Fatal,
-            ] {
-                let enabled = filter.is_level_enabled(level);
-                let color = if enabled { level.color() } else { Color32::GRAY };
-                
-                let btn = ui.selectable_label(
-                    enabled,
-                    RichText::new(level.as_str()).color(color).small(),
-                );
-                
-                if btn.clicked() {
-                    filter.toggle_level(level);
-                    changed = true;
-                }
-            }
-            
-            ui.separator();
-            
-            // Quick filter buttons
-            if ui.small_button(t::all()).on_hover_text(t::show_all_levels()).clicked() {
-                filter.enable_all_levels();
-                changed = true;
-            }
-            
-            if ui.small_button(t::errors()).on_hover_text(t::errors_and_warnings_only()).clicked() {
-                filter.errors_and_warnings_only();
-                changed = true;
-            }
-            
-            // Expand/collapse advanced filters
-            let expand_text = if self.expanded { 
-                format!("▼ {}", t::less()) 
-            } else { 
-                format!("▶ {}", t::more()) 
-            };
-            if ui.small_button(expand_text).clicked() {
-                self.expanded = !self.expanded;
-            }
-        });
+        // Only show the panel content when expanded
+        if !self.expanded {
+            return changed;
+        }
 
         // Expanded advanced filters
         if self.expanded {
@@ -142,6 +97,11 @@ impl FilterPanel {
         }
 
         changed
+    }
+
+    /// Check if the panel is expanded
+    pub fn is_expanded(&self) -> bool {
+        self.expanded
     }
 
     /// Show compact inline level filters

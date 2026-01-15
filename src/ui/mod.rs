@@ -10,5 +10,8 @@ pub mod global_search_panel;
 pub mod main_view;
 pub mod search_bar;
 pub mod settings_panel;
+pub mod split_view;
 pub mod status_bar;
+pub mod tab_bar;
+pub mod tab_manager;
 pub mod toolbar;

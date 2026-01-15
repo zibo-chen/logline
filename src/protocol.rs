@@ -72,6 +72,9 @@ pub struct HandshakePayload {
     /// Protocol version
     #[serde(default = "default_version")]
     pub version: u8,
+    /// Unique agent ID (hash of log file path)
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 fn default_version() -> u8 {
@@ -84,6 +87,7 @@ impl HandshakePayload {
         Self {
             project_name: project_name.into(),
             version: PROTOCOL_VERSION,
+            agent_id: None,
         }
     }
 }

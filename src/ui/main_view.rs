@@ -62,6 +62,8 @@ impl SelectionRange {
 
 /// Main view for displaying log entries
 pub struct MainView {
+    /// Unique ID for this view instance (to avoid ID collisions in split view)
+    pub view_id: egui::Id,
     /// Virtual scroll handler
     pub virtual_scroll: VirtualScroll,
     /// Syntax highlighter
@@ -86,7 +88,13 @@ pub struct MainView {
 impl MainView {
     /// Create a new main view
     pub fn new() -> Self {
+        Self::with_id(egui::Id::new("main_log_view_default"))
+    }
+
+    /// Create a new main view with a specific ID
+    pub fn with_id(view_id: egui::Id) -> Self {
         Self {
+            view_id,
             virtual_scroll: VirtualScroll::new(),
             highlighter: Highlighter::new(),
             selected_line: None,
@@ -141,9 +149,9 @@ impl MainView {
             self.virtual_scroll.state.auto_scroll = false;
         }
 
-        // Create the scroll area with ID for state persistence
+        // Create the scroll area with unique ID for state persistence
         let mut scroll_area = egui::ScrollArea::both()
-            .id_salt("main_log_view")
+            .id_salt(self.view_id)
             .auto_shrink([false, false]);
 
         // Use stick_to_bottom when auto-scroll is enabled

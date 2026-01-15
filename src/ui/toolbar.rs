@@ -1,6 +1,8 @@
 //! Toolbar component
 
 use crate::i18n::Translations as t;
+use crate::log_entry::LogLevel;
+use crate::search::FilterConfig;
 use egui::{self, Color32, RichText, Ui};
 
 /// Toolbar component
@@ -8,7 +10,11 @@ pub struct Toolbar;
 
 impl Toolbar {
     /// Show the toolbar
-    pub fn show(ui: &mut Ui, state: &mut ToolbarState) -> ToolbarAction {
+    pub fn show(
+        ui: &mut Ui,
+        state: &mut ToolbarState,
+        filter: Option<&mut FilterConfig>,
+    ) -> ToolbarAction {
         let mut action = ToolbarAction::None;
         let is_dark = state.dark_theme;
         let inactive_color = if is_dark {
@@ -119,6 +125,84 @@ impl Toolbar {
 
             ui.separator();
 
+            // Split view toggle button
+            let split_icon = if state.split_view_active {
+                "⧉"
+            } else {
+                "⬓"
+            };
+            let split_text = if state.split_view_active {
+                t::close_split()
+            } else {
+                t::split_view()
+            };
+            let split_color = if state.split_view_active {
+                Color32::from_rgb(100, 200, 100)
+            } else {
+                inactive_color
+            };
+
+            if ui
+                .button(RichText::new(format!("{} {}", split_icon, split_text)).color(split_color))
+                .on_hover_text(t::toggle_split_tooltip())
+                .clicked()
+            {
+                action = ToolbarAction::ToggleSplitView;
+            }
+
+            ui.separator();
+
+            // Level filters (if filter config is provided)
+            if let Some(filter) = filter {
+                ui.label(t::levels());
+
+                for level in [
+                    LogLevel::Trace,
+                    LogLevel::Debug,
+                    LogLevel::Info,
+                    LogLevel::Warn,
+                    LogLevel::Error,
+                    LogLevel::Fatal,
+                ] {
+                    let enabled = filter.is_level_enabled(level);
+                    let color = if enabled {
+                        level.color()
+                    } else {
+                        Color32::GRAY
+                    };
+
+                    let btn = ui.selectable_label(
+                        enabled,
+                        RichText::new(level.as_str()).color(color).small(),
+                    );
+
+                    if btn.clicked() {
+                        filter.toggle_level(level);
+                    }
+                }
+
+                ui.separator();
+
+                // Quick filter buttons
+                if ui
+                    .small_button(t::all())
+                    .on_hover_text(t::show_all_levels())
+                    .clicked()
+                {
+                    filter.enable_all_levels();
+                }
+
+                if ui
+                    .small_button(t::errors())
+                    .on_hover_text(t::errors_and_warnings_only())
+                    .clicked()
+                {
+                    filter.errors_and_warnings_only();
+                }
+
+                ui.separator();
+            }
+
             // Navigation buttons
             if ui
                 .button("⏮")
@@ -166,6 +250,7 @@ pub struct ToolbarState {
     pub search_visible: bool,
     pub dark_theme: bool,
     pub reverse_order: bool,
+    pub split_view_active: bool,
 }
 
 impl Default for ToolbarState {
@@ -175,6 +260,7 @@ impl Default for ToolbarState {
             search_visible: false,
             dark_theme: true,
             reverse_order: false,
+            split_view_active: false,
         }
     }
 }
@@ -194,4 +280,5 @@ pub enum ToolbarAction {
     ToggleTheme,
     OpenSettings,
     ToggleReverseOrder,
+    ToggleSplitView,
 }

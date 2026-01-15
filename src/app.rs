@@ -2,13 +2,9 @@
 
 use crate::bookmarks::BookmarksStore;
 use crate::config::{AppConfig, DisplayConfig, Shortcuts, Theme};
-use crate::file_watcher::FileWatcher;
-use crate::i18n::set_language;
-use crate::log_buffer::{LogBuffer, LogBufferConfig};
-use crate::log_entry::LogEntry;
-use crate::log_reader::{LogReader, LogReaderConfig};
+use crate::i18n::{set_language, Translations as t};
+use crate::log_buffer::LogBufferConfig;
 use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
-use crate::search::LogFilter;
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
@@ -17,41 +13,20 @@ use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel, OpenEditor};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
-use crate::ui::main_view::{ContextMenuAction, MainView};
+use crate::ui::main_view::ContextMenuAction;
 use crate::ui::search_bar::{SearchBar, SearchBarAction};
 use crate::ui::settings_panel::{SettingsAction, SettingsPanel};
 use crate::ui::status_bar::{StatusBar, StatusLevel};
+use crate::ui::tab_bar::TabBarAction;
+use crate::ui::tab_manager::TabManager;
 use crate::ui::toolbar::{Toolbar, ToolbarAction, ToolbarState};
 
 use crate::mcp::{McpConfig, McpServer};
 
 use anyhow::Result;
-use crossbeam_channel::{bounded, Receiver, Sender};
 use eframe::egui;
 use std::path::PathBuf;
-use std::thread;
 use std::time::{Duration, Instant};
-
-/// Messages from background reader thread
-#[derive(Debug)]
-enum ReaderMessage {
-    /// New log entries
-    NewEntries(Vec<LogEntry>),
-    /// File was reset (rotation)
-    FileReset,
-    /// Error occurred
-    Error(String),
-    /// Reading complete
-    #[allow(dead_code)]
-    Complete,
-}
-
-/// Messages to background reader thread
-#[derive(Debug)]
-enum ReaderCommand {
-    /// Stop reading
-    Stop,
-}
 
 /// Main application state
 pub struct LoglineApp {
@@ -62,31 +37,9 @@ pub struct LoglineApp {
     /// Keyboard shortcuts
     shortcuts: Shortcuts,
 
-    /// Log buffer
-    buffer: LogBuffer,
-    /// Current file path
-    current_file: Option<PathBuf>,
-    /// Log reader (for sync file info)
-    reader: Option<LogReader>,
-    /// File watcher
-    watcher: Option<FileWatcher>,
+    /// Tab manager for multiple log files
+    tab_manager: TabManager,
 
-    /// Background reader message receiver
-    reader_rx: Option<Receiver<ReaderMessage>>,
-    /// Background reader command sender
-    reader_tx: Option<Sender<ReaderCommand>>,
-    /// Current file encoding
-    current_encoding: Option<&'static encoding_rs::Encoding>,
-
-    /// Search and filter engine
-    filter: LogFilter,
-    /// Filtered indices cache
-    filtered_indices: Vec<usize>,
-    /// Whether filter is active
-    filter_active: bool,
-
-    /// Main log view
-    main_view: MainView,
     /// Search bar
     search_bar: SearchBar,
     /// Filter panel
@@ -103,8 +56,6 @@ pub struct LoglineApp {
 
     /// Last update time for rate limiting
     last_update: Instant,
-    /// Pending entries count (for batching)
-    pending_entries: usize,
 
     // === New: Remote server and sidebar ===
     /// Remote log server
@@ -232,24 +183,14 @@ impl LoglineApp {
         Self {
             display_config: config.display.clone(),
             shortcuts: Shortcuts::default(),
-            buffer: LogBuffer::with_config(LogBufferConfig {
-                max_lines: config.buffer.max_lines,
-                auto_trim: config.buffer.auto_trim,
-            }),
-            current_file: None,
-            reader: None,
-            watcher: None,
-            reader_rx: None,
-            reader_tx: None,
-            current_encoding: None,
-            filter: LogFilter::new(),
-            filtered_indices: Vec::new(),
-            filter_active: false,
-            main_view: {
-                let mut view = MainView::new();
-                // Apply theme from config at initialization
-                view.set_dark_theme(config.theme == Theme::Dark);
-                view
+            tab_manager: {
+                let buffer_config = LogBufferConfig {
+                    max_lines: config.buffer.max_lines,
+                    auto_trim: config.buffer.auto_trim,
+                };
+                let mut manager = TabManager::new(buffer_config);
+                manager.set_dark_theme(config.theme == Theme::Dark);
+                manager
             },
             search_bar: SearchBar::new(),
             filter_panel: FilterPanel::new(),
@@ -259,11 +200,11 @@ impl LoglineApp {
                 search_visible: false,
                 dark_theme: config.theme == Theme::Dark,
                 reverse_order: false,
+                split_view_active: false,
             },
             goto_dialog: GotoLineDialog::default(),
             file_picker_dialog: FilePickerDialog::new(),
             last_update: Instant::now(),
-            pending_entries: 0,
             // New components
             remote_server,
             activity_bar: ActivityBar::new(),
@@ -341,84 +282,17 @@ impl LoglineApp {
         ctx.set_fonts(fonts);
     }
 
-    /// Open a log file
+    /// Open a log file in a new tab
     pub fn open_file(
         &mut self,
         path: PathBuf,
         encoding: Option<&'static encoding_rs::Encoding>,
     ) -> Result<()> {
-        // Stop any existing reader (but don't save bookmarks here,
-        // as they should already be saved before clearing the buffer)
-        self.close_file_without_saving();
-
         // If no encoding specified, try to get saved encoding for this file
         let final_encoding = encoding.or_else(|| self.config.get_file_encoding(&path));
 
-        // Save encoding
-        self.current_encoding = final_encoding;
-
-        // Create reader with optional encoding
-        let config = LogReaderConfig {
-            encoding: final_encoding,
-            ..Default::default()
-        };
-        let mut reader = LogReader::with_config(&path, config)?;
-
-        // Read initial content
-        let entries = reader.read_all()?;
-        self.buffer.extend(entries);
-
-        // Restore bookmarks for this file
-        if let Some(file_bookmarks) = self.bookmarks_store.get_bookmarks(&path) {
-            let bookmarked_lines: Vec<usize> = file_bookmarks.lines.iter().copied().collect();
-            // Collect all indices first to avoid borrow conflicts
-            let indices_to_bookmark: Vec<usize> = bookmarked_lines
-                .into_iter()
-                .filter_map(|line_number| {
-                    self.buffer
-                        .iter()
-                        .position(|e| e.line_number == line_number)
-                })
-                .collect();
-
-            // Then toggle bookmarks
-            for index in indices_to_bookmark {
-                self.buffer.toggle_bookmark(index);
-            }
-        }
-
-        // Update filter
-        self.update_filter();
-
-        // Create file watcher
-        let watcher = FileWatcher::new(&path)?;
-
-        // Start background reader thread
-        let (msg_tx, msg_rx) = bounded::<ReaderMessage>(1000);
-        let (cmd_tx, cmd_rx) = bounded::<ReaderCommand>(10);
-
-        let reader_path = path.clone();
-        let reader_offset = reader.offset();
-        let reader_line_count = reader.line_count();
-        let reader_encoding = final_encoding;
-
-        thread::spawn(move || {
-            Self::reader_thread(
-                reader_path,
-                reader_offset,
-                reader_line_count,
-                reader_encoding,
-                msg_tx,
-                cmd_rx,
-            );
-        });
-
-        // Store state
-        self.current_file = Some(path.clone());
-        self.reader = Some(reader);
-        self.watcher = Some(watcher);
-        self.reader_rx = Some(msg_rx);
-        self.reader_tx = Some(cmd_tx);
+        // Open in tab manager
+        let tab_id = self.tab_manager.open_local_file(path.clone(), final_encoding, &self.bookmarks_store)?;
 
         // Update recent files (only for local files, not cache files)
         let is_cache_file = if let Some(data_dir) = dirs::data_dir() {
@@ -435,9 +309,26 @@ impl LoglineApp {
             self.explorer_panel.local_files = self.config.recent_files.clone();
         }
 
+        // Add to explorer panel open editors
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        self.explorer_panel.add_editor(OpenEditor {
+            name,
+            path: path.clone(),
+            is_remote: false,
+            is_dirty: false,
+        });
+
         // Sync to MCP server
         if let Some(ref mcp_server) = self.mcp_server {
             mcp_server.add_local_file(path);
+        }
+
+        // Scroll to bottom for new file
+        if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
+            state.main_view.scroll_to_bottom();
         }
 
         self.status_bar
@@ -446,53 +337,85 @@ impl LoglineApp {
         Ok(())
     }
 
-    /// Close the current file
-    pub fn close_file(&mut self) {
-        // Save bookmarks before closing
-        let current_path = self.current_file.clone();
-        if let Some(path) = current_path {
-            self.save_current_bookmarks(&path);
+    /// Open a remote stream in a new tab
+    pub fn open_remote_stream(&mut self, project_name: String, cache_path: PathBuf) -> Result<()> {
+        // Open in tab manager
+        let tab_id = self.tab_manager.open_remote_stream(
+            project_name.clone(),
+            cache_path.clone(),
+            &self.bookmarks_store,
+        )?;
+
+        // Add to explorer panel
+        self.explorer_panel.add_editor(OpenEditor {
+            name: project_name,
+            path: cache_path,
+            is_remote: true,
+            is_dirty: false,
+        });
+
+        // Scroll to bottom for new stream
+        if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
+            state.main_view.scroll_to_bottom();
         }
 
-        self.close_file_without_saving();
+        self.status_bar
+            .set_message("Remote stream opened", StatusLevel::Success);
+
+        Ok(())
     }
 
-    /// Close file without saving bookmarks (used internally when switching files)
-    fn close_file_without_saving(&mut self) {
-        self.current_encoding = None;
-        // Stop reader thread
-        if let Some(tx) = self.reader_tx.take() {
-            let _ = tx.send(ReaderCommand::Stop);
-        }
-        self.reader_rx = None;
-
-        // Stop watcher
-        if let Some(watcher) = self.watcher.take() {
-            watcher.stop();
+    /// Close a tab by ID
+    pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
+        // Also remove from explorer panel
+        if let Some(tab) = self.tab_manager.tab_bar.get_tab(tab_id) {
+            let path = tab.path.clone();
+            self.explorer_panel.open_editors.retain(|e| e.path != path);
         }
 
-        self.reader = None;
-        self.current_file = None;
+        self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
     }
 
-    /// Save bookmarks for the current file
-    fn save_current_bookmarks(&mut self, path: &PathBuf) {
-        use std::collections::HashSet;
+    /// Reload the current file
+    pub fn reload_file(&mut self) {
+        if let Err(e) = self.tab_manager.reload_active(&self.bookmarks_store) {
+            self.status_bar
+                .set_message(format!("Reload failed: {}", e), StatusLevel::Error);
+        } else {
+            self.status_bar
+                .set_message("File reloaded", StatusLevel::Success);
+        }
+    }
 
-        // Collect all bookmarked line numbers
-        let bookmarked_lines: HashSet<usize> = self
-            .buffer
-            .iter()
-            .filter(|e| e.bookmarked)
-            .map(|e| e.line_number)
-            .collect();
+    /// Change the encoding of the current file
+    pub fn change_encoding(&mut self, encoding: Option<&'static encoding_rs::Encoding>) {
+        if let Some(state) = self.tab_manager.get_active_state() {
+            let path = state.path.clone();
+            
+            // Save encoding preference
+            self.config.set_file_encoding(path.clone(), encoding);
+            let _ = self.config.save();
 
-        // Update bookmarks store
-        self.bookmarks_store.set_bookmarks(path, bookmarked_lines);
-
-        // Save to disk
-        if let Err(e) = self.bookmarks_store.save() {
-            tracing::error!("Failed to save bookmarks: {}", e);
+            // Close the current tab and reopen with new encoding
+            if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
+                
+                match self.open_file(path, encoding) {
+                    Ok(()) => {
+                        let encoding_name = encoding.map(|e| e.name()).unwrap_or("Auto");
+                        self.status_bar.set_message(
+                            format!("Encoding changed to: {}", encoding_name),
+                            StatusLevel::Success,
+                        );
+                    }
+                    Err(e) => {
+                        self.status_bar.set_message(
+                            format!("Failed to change encoding: {}", e),
+                            StatusLevel::Error,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -557,173 +480,11 @@ impl LoglineApp {
         }
     }
 
-    /// Reload the current file from the beginning
-    pub fn reload_file(&mut self) {
-        if let Some(path) = self.current_file.clone() {
-            let encoding = self.current_encoding; // Preserve encoding
-
-            // Close and clear
-            self.close_file();
-            self.buffer.clear();
-            self.filtered_indices.clear();
-            self.main_view.clear_selection();
-
-            // Reopen the file with the same encoding
-            match self.open_file(path, encoding) {
-                Ok(()) => {
-                    self.status_bar
-                        .set_message("File reloaded", StatusLevel::Success);
-                }
-                Err(e) => {
-                    self.status_bar
-                        .set_message(format!("Reload failed: {}", e), StatusLevel::Error);
-                }
-            }
-        } else {
-            self.status_bar
-                .set_message("No file to reload", StatusLevel::Warning);
-        }
-    }
-
-    /// Change the encoding of the current file
-    pub fn change_encoding(&mut self, encoding: Option<&'static encoding_rs::Encoding>) {
-        if let Some(path) = self.current_file.clone() {
-            // Save encoding preference
-            self.config.set_file_encoding(path.clone(), encoding);
-            let _ = self.config.save();
-
-            // Close and clear
-            self.close_file();
-            self.buffer.clear();
-            self.filtered_indices.clear();
-            self.main_view.clear_selection();
-
-            // Reopen with new encoding
-            match self.open_file(path, encoding) {
-                Ok(()) => {
-                    let encoding_name = encoding.map(|e| e.name()).unwrap_or("Auto");
-                    self.status_bar.set_message(
-                        format!("Encoding changed to: {}", encoding_name),
-                        StatusLevel::Success,
-                    );
-                }
-                Err(e) => {
-                    self.status_bar.set_message(
-                        format!("Failed to change encoding: {}", e),
-                        StatusLevel::Error,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Background reader thread function
-    fn reader_thread(
-        path: PathBuf,
-        initial_offset: u64,
-        initial_line_count: usize,
-        encoding: Option<&'static encoding_rs::Encoding>,
-        msg_tx: Sender<ReaderMessage>,
-        cmd_rx: Receiver<ReaderCommand>,
-    ) {
-        let config = LogReaderConfig {
-            encoding,
-            ..Default::default()
-        };
-        let mut reader = match LogReader::with_config(&path, config) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
-                return;
-            }
-        };
-
-        // Seek to where we left off with correct line count
-        reader.seek_with_line_count(initial_offset, initial_line_count);
-
-        loop {
-            // Check for stop command
-            if let Ok(ReaderCommand::Stop) = cmd_rx.try_recv() {
-                break;
-            }
-
-            // Check for new content
-            match reader.has_new_content() {
-                Ok(true) => {
-                    // Check if file was truncated (rotation) by comparing with actual file size
-                    match std::fs::metadata(&path) {
-                        Ok(metadata) => {
-                            let current_size = metadata.len();
-                            if current_size < reader.offset() {
-                                // File was truncated - this is a rotation
-                                let _ = msg_tx.send(ReaderMessage::FileReset);
-                                reader.seek_with_line_count(0, 0);
-                            }
-                        }
-                        Err(e) => {
-                            let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
-                        }
-                    }
-
-                    match reader.read_new_lines() {
-                        Ok(entries) if !entries.is_empty() => {
-                            let _ = msg_tx.send(ReaderMessage::NewEntries(entries));
-                        }
-                        Err(e) => {
-                            let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-                Err(e) => {
-                    let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
-                    thread::sleep(Duration::from_secs(1));
-                }
-                _ => {}
-            }
-
-            // Poll interval
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Process messages from background reader
-    fn process_reader_messages(&mut self) {
-        let Some(rx) = &self.reader_rx else { return };
-
-        let mut new_entries = Vec::new();
-        let mut _had_reset = false;
-
-        // Drain all available messages
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                ReaderMessage::NewEntries(entries) => {
-                    new_entries.extend(entries);
-                }
-                ReaderMessage::FileReset => {
-                    _had_reset = true;
-                    self.buffer.clear();
-                    self.status_bar
-                        .set_message("File rotated, reloading...", StatusLevel::Warning);
-                }
-                ReaderMessage::Error(e) => {
-                    self.status_bar
-                        .set_message(format!("Error: {}", e), StatusLevel::Error);
-                }
-                ReaderMessage::Complete => {}
-            }
-        }
-
-        // Add new entries to buffer
-        if !new_entries.is_empty() {
-            self.buffer.extend(new_entries);
-            self.filter.mark_dirty();
-            self.pending_entries += 1;
-
-            // Note: When auto-scroll is enabled, stick_to_bottom in ScrollArea
-            // will automatically keep us at the bottom. No need to manually
-            // scroll, which prevents flickering.
-        }
+    /// Clear the active tab's buffer
+    pub fn clear_buffer(&mut self) {
+        self.tab_manager.clear_active_buffer();
+        self.status_bar
+            .set_message("Display cleared", StatusLevel::Info);
     }
 
     /// Process events from remote server
@@ -794,23 +555,6 @@ impl LoglineApp {
         }
     }
 
-    /// Update filtered indices
-    fn update_filter(&mut self) {
-        let indices = self.filter.apply(&self.buffer);
-        self.filtered_indices = indices.to_vec();
-        self.filter_active = self.filter.is_filtering();
-    }
-
-    /// Clear the log buffer
-    pub fn clear_buffer(&mut self) {
-        self.buffer.clear();
-        self.filtered_indices.clear();
-        self.filter.mark_dirty();
-        self.main_view.clear_selection();
-        self.status_bar
-            .set_message("Display cleared", StatusLevel::Info);
-    }
-
     /// Handle keyboard shortcuts
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<AppAction> {
         // Check for shortcuts using ctx.input_mut
@@ -831,15 +575,19 @@ impl LoglineApp {
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.find_next)) {
-            if let Some(m) = self.filter.search.next() {
-                self.main_view.scroll_to_line(m.buffer_index);
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                if let Some(m) = state.filter.search.next() {
+                    state.main_view.scroll_to_line(m.buffer_index);
+                }
             }
             return None;
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.find_prev)) {
-            if let Some(m) = self.filter.search.previous() {
-                self.main_view.scroll_to_line(m.buffer_index);
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                if let Some(m) = state.filter.search.previous() {
+                    state.main_view.scroll_to_line(m.buffer_index);
+                }
             }
             return None;
         }
@@ -855,104 +603,44 @@ impl LoglineApp {
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.toggle_auto_scroll)) {
-            self.main_view.toggle_auto_scroll();
-            self.toolbar_state.auto_scroll = self.main_view.is_auto_scroll();
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                state.main_view.toggle_auto_scroll();
+                self.toolbar_state.auto_scroll = state.main_view.is_auto_scroll();
+            }
             return None;
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.toggle_reverse_order)) {
-            self.main_view.toggle_reverse_order();
-            self.toolbar_state.reverse_order = self.main_view.is_reverse_order();
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                state.main_view.toggle_reverse_order();
+                self.toolbar_state.reverse_order = state.main_view.is_reverse_order();
+            }
             return None;
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.goto_top)) {
-            self.main_view.scroll_to_top();
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                state.main_view.scroll_to_top();
+            }
             return None;
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.goto_bottom)) {
-            self.main_view.scroll_to_bottom();
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                state.main_view.scroll_to_bottom();
+            }
             return None;
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.copy)) {
-            let filtered = if self.filter_active {
-                Some(self.filtered_indices.as_slice())
-            } else {
-                None
-            };
-            if let Some(text) = self.main_view.get_selected_text(&self.buffer, filtered) {
-                let lines_count = self.main_view.selected_lines_count();
-                ctx.copy_text(text);
-                if lines_count > 1 {
-                    self.status_bar.set_message(
-                        format!("Copied {} lines to clipboard", lines_count),
-                        StatusLevel::Info,
-                    );
-                } else {
-                    self.status_bar
-                        .set_message("Copied to clipboard", StatusLevel::Info);
-                }
-            }
-            return None;
-        }
-
-        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.toggle_bookmark)) {
-            let filtered = if self.filter_active {
-                Some(self.filtered_indices.as_slice())
-            } else {
-                None
-            };
-            let indices = self.main_view.get_selected_indices(filtered);
-            if !indices.is_empty() {
-                let count = self.buffer.toggle_bookmarks(&indices);
-                if count > 1 {
-                    self.status_bar.set_message(
-                        format!("Toggled bookmarks on {} lines", count),
-                        StatusLevel::Info,
-                    );
-                }
-                // Mark filter as dirty to update bookmark-only filter
-                if self.filter.filter.bookmarks_only {
-                    self.update_filter();
-                }
-
-                // Auto-save bookmarks
-                let current_path = self.current_file.clone();
-                if let Some(path) = current_path {
-                    self.save_current_bookmarks(&path);
-                }
-            }
-            return None;
-        }
-
-        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.select_all)) {
-            let total_rows = if self.filter_active {
-                self.filtered_indices.len()
-            } else {
-                self.buffer.len()
-            };
-            if total_rows > 0 {
-                self.main_view.select_all(total_rows);
-            }
-            return None;
-        }
-
-        None
-    }
-
-    /// Handle context menu actions
-    fn handle_context_menu_action(&mut self, action: ContextMenuAction, ctx: egui::Context) {
-        match action {
-            ContextMenuAction::Copy => {
-                let filtered = if self.filter_active {
-                    Some(self.filtered_indices.as_slice())
+            if let Some(state) = self.tab_manager.get_active_state() {
+                let filtered = if state.filter_active {
+                    Some(state.filtered_indices.as_slice())
                 } else {
                     None
                 };
-                if let Some(text) = self.main_view.get_selected_text(&self.buffer, filtered) {
-                    let lines_count = self.main_view.selected_lines_count();
+                if let Some(text) = state.main_view.get_selected_text(&state.buffer, filtered) {
+                    let lines_count = state.main_view.selected_lines_count();
                     ctx.copy_text(text);
                     if lines_count > 1 {
                         self.status_bar.set_message(
@@ -965,31 +653,19 @@ impl LoglineApp {
                     }
                 }
             }
-            ContextMenuAction::CopyAll => {
-                let filtered = if self.filter_active {
-                    Some(self.filtered_indices.as_slice())
+            return None;
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.toggle_bookmark)) {
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                let filtered = if state.filter_active {
+                    Some(state.filtered_indices.as_slice())
                 } else {
                     None
                 };
-                let text = self.get_all_visible_text(filtered);
-                if !text.is_empty() {
-                    let lines_count = text.lines().count();
-                    ctx.copy_text(text);
-                    self.status_bar.set_message(
-                        format!("Copied {} lines to clipboard", lines_count),
-                        StatusLevel::Info,
-                    );
-                }
-            }
-            ContextMenuAction::ToggleBookmark => {
-                let filtered = if self.filter_active {
-                    Some(self.filtered_indices.as_slice())
-                } else {
-                    None
-                };
-                let indices = self.main_view.get_selected_indices(filtered);
+                let indices = state.main_view.get_selected_indices(filtered);
                 if !indices.is_empty() {
-                    let count = self.buffer.toggle_bookmarks(&indices);
+                    let count = state.buffer.toggle_bookmarks(&indices);
                     if count > 1 {
                         self.status_bar.set_message(
                             format!("Toggled bookmarks on {} lines", count),
@@ -997,44 +673,138 @@ impl LoglineApp {
                         );
                     }
                     // Mark filter as dirty to update bookmark-only filter
-                    if self.filter.filter.bookmarks_only {
-                        self.update_filter();
-                    }
-
-                    // Auto-save bookmarks
-                    let current_path = self.current_file.clone();
-                    if let Some(path) = current_path {
-                        self.save_current_bookmarks(&path);
+                    if state.filter.filter.bookmarks_only {
+                        state.update_filter();
                     }
                 }
             }
+            // Auto-save bookmarks
+            if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
+            }
+            return None;
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.select_all)) {
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                let total_rows = if state.filter_active {
+                    state.filtered_indices.len()
+                } else {
+                    state.buffer.len()
+                };
+                if total_rows > 0 {
+                    state.main_view.select_all(total_rows);
+                }
+            }
+            return None;
+        }
+
+        None
+    }
+
+    /// Handle context menu actions
+    fn handle_context_menu_action(&mut self, action: ContextMenuAction, ctx: egui::Context) {
+        match action {
+            ContextMenuAction::Copy => {
+                if let Some(state) = self.tab_manager.get_active_state() {
+                    let filtered = if state.filter_active {
+                        Some(state.filtered_indices.as_slice())
+                    } else {
+                        None
+                    };
+                    if let Some(text) = state.main_view.get_selected_text(&state.buffer, filtered) {
+                        let lines_count = state.main_view.selected_lines_count();
+                        ctx.copy_text(text);
+                        if lines_count > 1 {
+                            self.status_bar.set_message(
+                                format!("Copied {} lines to clipboard", lines_count),
+                                StatusLevel::Info,
+                            );
+                        } else {
+                            self.status_bar
+                                .set_message("Copied to clipboard", StatusLevel::Info);
+                        }
+                    }
+                }
+            }
+            ContextMenuAction::CopyAll => {
+                if let Some(state) = self.tab_manager.get_active_state() {
+                    let filtered = if state.filter_active {
+                        Some(state.filtered_indices.as_slice())
+                    } else {
+                        None
+                    };
+                    let text = Self::get_all_visible_text_from_state(state, filtered);
+                    if !text.is_empty() {
+                        let lines_count = text.lines().count();
+                        ctx.copy_text(text);
+                        self.status_bar.set_message(
+                            format!("Copied {} lines to clipboard", lines_count),
+                            StatusLevel::Info,
+                        );
+                    }
+                }
+            }
+            ContextMenuAction::ToggleBookmark => {
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    let filtered = if state.filter_active {
+                        Some(state.filtered_indices.as_slice())
+                    } else {
+                        None
+                    };
+                    let indices = state.main_view.get_selected_indices(filtered);
+                    if !indices.is_empty() {
+                        let count = state.buffer.toggle_bookmarks(&indices);
+                        if count > 1 {
+                            self.status_bar.set_message(
+                                format!("Toggled bookmarks on {} lines", count),
+                                StatusLevel::Info,
+                            );
+                        }
+                        // Mark filter as dirty to update bookmark-only filter
+                        if state.filter.filter.bookmarks_only {
+                            state.update_filter();
+                        }
+                    }
+                }
+                // Auto-save bookmarks
+                if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                    self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
+                }
+            }
             ContextMenuAction::ClearSelection => {
-                self.main_view.clear_selection();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.clear_selection();
+                }
             }
             ContextMenuAction::SelectAll => {
                 // Already handled in main_view
             }
             ContextMenuAction::ScrollToTop => {
-                self.main_view.scroll_to_top();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.scroll_to_top();
+                }
             }
             ContextMenuAction::ScrollToBottom => {
-                self.main_view.scroll_to_bottom();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.scroll_to_bottom();
+                }
             }
         }
     }
 
-    /// Get all visible text for copy
-    fn get_all_visible_text(&self, filtered_indices: Option<&[usize]>) -> String {
+    /// Get all visible text for copy from a tab state
+    fn get_all_visible_text_from_state(state: &crate::ui::tab_manager::TabState, filtered_indices: Option<&[usize]>) -> String {
         let mut lines = Vec::new();
         if let Some(indices) = filtered_indices {
             for &idx in indices {
-                if let Some(entry) = self.buffer.get(idx) {
+                if let Some(entry) = state.buffer.get(idx) {
                     lines.push(entry.content.clone());
                 }
             }
         } else {
-            for i in 0..self.buffer.len() {
-                if let Some(entry) = self.buffer.get(i) {
+            for i in 0..state.buffer.len() {
+                if let Some(entry) = state.buffer.get(i) {
                     lines.push(entry.content.clone());
                 }
             }
@@ -1051,8 +821,10 @@ impl LoglineApp {
                 None
             }
             ToolbarAction::ToggleAutoScroll => {
-                self.main_view.toggle_auto_scroll();
-                self.toolbar_state.auto_scroll = self.main_view.is_auto_scroll();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.toggle_auto_scroll();
+                    self.toolbar_state.auto_scroll = state.main_view.is_auto_scroll();
+                }
                 None
             }
             ToolbarAction::Clear => {
@@ -1069,17 +841,21 @@ impl LoglineApp {
                 None
             }
             ToolbarAction::GoToTop => {
-                self.main_view.scroll_to_top();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.scroll_to_top();
+                }
                 None
             }
             ToolbarAction::GoToBottom => {
-                self.main_view.scroll_to_bottom();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.scroll_to_bottom();
+                }
                 None
             }
             ToolbarAction::ToggleTheme => {
                 self.config.theme.toggle();
                 self.toolbar_state.dark_theme = self.config.theme == Theme::Dark;
-                self.main_view.set_dark_theme(self.toolbar_state.dark_theme);
+                self.tab_manager.set_dark_theme(self.toolbar_state.dark_theme);
                 self.settings_panel.dark_theme = self.toolbar_state.dark_theme;
                 self.global_search_panel
                     .set_dark_theme(self.toolbar_state.dark_theme);
@@ -1093,42 +869,54 @@ impl LoglineApp {
                 None
             }
             ToolbarAction::ToggleReverseOrder => {
-                self.main_view.toggle_reverse_order();
-                self.toolbar_state.reverse_order = self.main_view.is_reverse_order();
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.main_view.toggle_reverse_order();
+                    self.toolbar_state.reverse_order = state.main_view.is_reverse_order();
+                }
+                None
+            }
+            ToolbarAction::ToggleSplitView => {
+                self.tab_manager.toggle_split();
+                self.toolbar_state.split_view_active = self.tab_manager.is_split();
                 None
             }
             ToolbarAction::None => None,
-        }
-    }
-
-    /// Handle search bar actions
-    fn handle_search_action(&mut self, action: SearchBarAction) {
-        match action {
-            SearchBarAction::SearchChanged => {
-                self.filter.search.search(&self.buffer);
-                self.update_filter();
-            }
-            SearchBarAction::FindNext => {
-                if let Some(m) = self.filter.search.next() {
-                    self.main_view.scroll_to_line(m.buffer_index);
-                }
-            }
-            SearchBarAction::FindPrev => {
-                if let Some(m) = self.filter.search.previous() {
-                    self.main_view.scroll_to_line(m.buffer_index);
-                }
-            }
-            SearchBarAction::Close => {
-                self.search_bar.close();
-                self.toolbar_state.search_visible = false;
-            }
-            SearchBarAction::None => {}
         }
     }
 }
 
 impl eframe::App for LoglineApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Handle file drag-and-drop
+        ctx.input(|i| {
+            if !i.raw.dropped_files.is_empty() {
+                for file in &i.raw.dropped_files {
+                    if let Some(path) = &file.path {
+                        tracing::info!("File dropped: {:?}", path);
+
+                        // Open the dropped file in a new tab
+                        match self.open_file(path.clone(), None) {
+                            Ok(_) => {
+                                self.status_bar.set_message(
+                                    format!("已打开文件: {}", path.display()),
+                                    StatusLevel::Success,
+                                );
+                            }
+                            Err(e) => {
+                                self.status_bar.set_message(
+                                    format!("打开文件失败: {}", e),
+                                    StatusLevel::Error,
+                                );
+                            }
+                        }
+
+                        // Only handle the first dropped file
+                        break;
+                    }
+                }
+            }
+        });
+
         // Initialize system tray after event loop has started (macOS requirement)
         if !self.tray_initialized {
             self.tray_initialized = true;
@@ -1182,69 +970,178 @@ impl eframe::App for LoglineApp {
             ctx.set_visuals(visuals);
         }
 
-        // Process background messages
-        self.process_reader_messages();
+        // Process background messages for all tabs
+        self.tab_manager.process_all_reader_messages();
 
         // Process remote server events
         self.process_server_events();
 
         // Rate-limit filter updates
         if self.last_update.elapsed() > Duration::from_millis(16) {
-            if self.pending_entries > 0 {
-                self.update_filter();
-                self.pending_entries = 0;
-            }
+            self.tab_manager.update_pending_filters();
             self.last_update = Instant::now();
         }
 
         // Handle shortcuts
         let mut action = self.handle_shortcuts(ctx);
 
-        // Top panel with toolbar
+        // Top panel with toolbar (including level filters)
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            let toolbar_action = Toolbar::show(ui, &mut self.toolbar_state);
+            let filter_config = self.tab_manager.get_active_state_mut()
+                .map(|state| &mut state.filter.filter);
+            let toolbar_action = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
             if let Some(a) = self.handle_toolbar_action(toolbar_action) {
                 action = Some(a);
+            }
+            
+            // Update filter if changed
+            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                state.update_filter();
             }
         });
 
         // Search bar panel
         if self.search_bar.visible {
             egui::TopBottomPanel::top("search").show(ctx, |ui| {
-                let search_action = self.search_bar.show(ui, &mut self.filter.search);
-                self.handle_search_action(search_action);
+                // Get search engine from active tab if available
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    let search_action = self.search_bar.show(ui, &mut state.filter.search);
+                    // Handle search action after getting the state again
+                    match search_action {
+                        SearchBarAction::SearchChanged => {
+                            state.filter.search.search(&state.buffer);
+                            state.update_filter();
+                        }
+                        SearchBarAction::FindNext => {
+                            if let Some(m) = state.filter.search.next() {
+                                state.main_view.scroll_to_line(m.buffer_index);
+                            }
+                        }
+                        SearchBarAction::FindPrev => {
+                            if let Some(m) = state.filter.search.previous() {
+                                state.main_view.scroll_to_line(m.buffer_index);
+                            }
+                        }
+                        SearchBarAction::Close => {
+                            self.search_bar.close();
+                            self.toolbar_state.search_visible = false;
+                        }
+                        SearchBarAction::None => {}
+                    }
+                }
             });
         }
 
-        // Filter panel
-        egui::TopBottomPanel::top("filter").show(ctx, |ui| {
-            if self.filter_panel.show(ui, &mut self.filter.filter) {
-                self.update_filter();
-            }
-        });
+        // Filter panel (only shown when expanded for advanced filters)
+        if self.filter_panel.is_expanded() {
+            egui::TopBottomPanel::top("filter").show(ctx, |ui| {
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    if self.filter_panel.show(ui, &mut state.filter.filter) {
+                        state.update_filter();
+                    }
+                }
+            });
+        }
 
         // Bottom status bar
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            if let Some(action) = self.status_bar.show(
-                ui,
-                self.current_file.as_deref(),
-                &self.buffer,
-                self.reader.as_ref(),
-                self.main_view.is_auto_scroll(),
-                if self.filter_active {
-                    Some(self.filtered_indices.len())
+            // Get info from active tab
+            let (current_file, buffer_ref, reader_ref, auto_scroll, filtered_count, selected_count) = 
+                if let Some(state) = self.tab_manager.get_active_state() {
+                    (
+                        Some(state.path.as_path()),
+                        Some(&state.buffer),
+                        state.reader.as_ref(),
+                        state.main_view.is_auto_scroll(),
+                        if state.filter_active { Some(state.filtered_indices.len()) } else { None },
+                        state.main_view.selected_lines_count(),
+                    )
                 } else {
-                    None
-                },
-                self.main_view.selected_lines_count(),
-            ) {
-                match action {
-                    crate::ui::status_bar::StatusBarAction::ChangeEncoding(encoding) => {
-                        self.change_encoding(encoding);
+                    (None, None, None, true, None, 0)
+                };
+            
+            if let Some(buffer) = buffer_ref {
+                if let Some(action) = self.status_bar.show(
+                    ui,
+                    current_file,
+                    buffer,
+                    reader_ref,
+                    auto_scroll,
+                    filtered_count,
+                    selected_count,
+                ) {
+                    match action {
+                        crate::ui::status_bar::StatusBarAction::ChangeEncoding(encoding) => {
+                            self.change_encoding(encoding);
+                        }
                     }
                 }
+            } else {
+                // Show empty status bar when no tab is open
+                ui.horizontal(|ui| {
+                    ui.label(t::no_open_tabs());
+                });
             }
         });
+
+        // === Tab Bar Panel ===
+        if !self.tab_manager.is_empty() {
+            egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Tab bar takes most of the space
+                    let available_width = ui.available_width() - 60.0; // Reserve space for split buttons
+                    ui.allocate_ui(egui::vec2(available_width, ui.available_height()), |ui| {
+                        let tab_action = self.tab_manager.tab_bar.show(ui);
+                        match tab_action {
+                            TabBarAction::SelectTab(id) => {
+                                self.tab_manager.tab_bar.active_tab = Some(id);
+                                // If in split mode, also update the active pane's tab
+                                if self.tab_manager.is_split() {
+                                    self.tab_manager.split_view.set_active_tab(id);
+                                }
+                            }
+                            TabBarAction::CloseTab(id) => {
+                                // Handle split view tab close
+                                self.tab_manager.split_view.handle_tab_close(id);
+                                self.close_tab(id);
+                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                            }
+                            TabBarAction::CloseOtherTabs(keep_id) => {
+                                self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
+                                // Also sync explorer panel
+                                self.sync_explorer_with_tabs();
+                                self.tab_manager.sync_split_with_tab_bar();
+                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                            }
+                            TabBarAction::CloseTabsToRight(id) => {
+                                self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
+                                self.sync_explorer_with_tabs();
+                                self.tab_manager.sync_split_with_tab_bar();
+                                self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                            }
+                            TabBarAction::CloseAllTabs => {
+                                self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
+                                self.explorer_panel.open_editors.clear();
+                                self.toolbar_state.split_view_active = false;
+                            }
+                            TabBarAction::ReorderTabs(from, to) => {
+                                self.tab_manager.tab_bar.reorder(from, to);
+                            }
+                            TabBarAction::OpenInSplit(id) => {
+                                self.tab_manager.enable_split(id);
+                                self.toolbar_state.split_view_active = true;
+                            }
+                            TabBarAction::None => {}
+                        }
+                    });
+
+                    // Split view controls on the right
+                    let split_action = self.tab_manager.split_view.show_split_buttons(ui, self.tab_manager.len() >= 2);
+                    self.tab_manager.handle_split_action(split_action);
+                    self.toolbar_state.split_view_active = self.tab_manager.is_split();
+                });
+            });
+        }
 
         // === New: Activity Bar (leftmost narrow panel) ===
         egui::SidePanel::left("activity_bar")
@@ -1322,134 +1219,34 @@ impl eframe::App for LoglineApp {
                                         .map(|e| e.path.clone());
 
                                     if let Some(path) = editor_path {
-                                        // Switch to the selected editor/file
-                                        if self.current_file.as_ref() != Some(&path) {
-                                            // Save bookmarks for current file before switching
-                                            let current_path = self.current_file.clone();
-                                            if let Some(current) = current_path {
-                                                self.save_current_bookmarks(&current);
-                                            }
-
-                                            // Clear buffer before switching
-                                            self.buffer.clear();
-                                            self.filtered_indices.clear();
-                                            self.main_view.clear_selection();
-
-                                            let _ = self.open_file(path, None);
-
-                                            // Scroll to bottom to show latest logs
-                                            self.main_view.scroll_to_bottom();
+                                        // Find and switch to the tab with this path
+                                        if let Some(tab_id) = self.tab_manager.tab_bar.find_by_path(&path) {
+                                            self.tab_manager.tab_bar.active_tab = Some(tab_id);
                                         }
                                     }
                                 }
                                 ExplorerAction::CloseEditor(idx, editor) => {
-                                    // Check if this is the currently displayed file
-                                    let is_current =
-                                        self.current_file.as_ref() == Some(&editor.path);
-
-                                    // Close editor from list
-                                    self.explorer_panel.close_editor(idx);
-
-                                    if is_current {
-                                        if editor.is_remote {
-                                            // Remote log: clear display but keep background connection
-                                            self.buffer.clear();
-                                            self.filtered_indices.clear();
-                                            self.main_view.clear_selection();
-                                            self.current_file = None;
-                                            // Stop the reader but don't stop remote server
-                                            if let Some(tx) = self.reader_tx.take() {
-                                                let _ = tx.send(ReaderCommand::Stop);
-                                            }
-                                            self.reader_rx = None;
-                                            if let Some(watcher) = self.watcher.take() {
-                                                watcher.stop();
-                                            }
-                                            self.reader = None;
-                                        } else {
-                                            // Local file: close file completely
-                                            self.close_file();
-                                            self.buffer.clear();
-                                            self.filtered_indices.clear();
-                                            self.main_view.clear_selection();
-                                        }
-
-                                        // If there's another open editor, switch to it
-                                        if let Some(selected_idx) =
-                                            self.explorer_panel.selected_editor
-                                        {
-                                            if let Some(next_editor) =
-                                                self.explorer_panel.open_editors.get(selected_idx)
-                                            {
-                                                let _ =
-                                                    self.open_file(next_editor.path.clone(), None);
-                                                self.main_view.scroll_to_bottom();
-                                            }
-                                        }
+                                    // Close the tab with this path
+                                    if let Some(tab_id) = self.tab_manager.tab_bar.find_by_path(&editor.path) {
+                                        self.close_tab(tab_id);
                                     }
+                                    // Also close from explorer panel
+                                    self.explorer_panel.close_editor(idx);
                                 }
                                 ExplorerAction::OpenLocalFile(path) => {
-                                    // Save bookmarks for current file before opening new one
-                                    let current_path = self.current_file.clone();
-                                    if let Some(path_to_save) = current_path {
-                                        self.save_current_bookmarks(&path_to_save);
-                                    }
-
-                                    // Clear buffer before opening
-                                    self.buffer.clear();
-                                    self.filtered_indices.clear();
-                                    self.main_view.clear_selection();
-
                                     if let Err(e) = self.open_file(path.clone(), None) {
                                         self.status_bar.set_message(
                                             format!("打开文件失败: {}", e),
                                             StatusLevel::Error,
                                         );
-                                    } else {
-                                        // Add to open editors
-                                        let name = path
-                                            .file_name()
-                                            .map(|n| n.to_string_lossy().to_string())
-                                            .unwrap_or_else(|| path.display().to_string());
-                                        self.explorer_panel.add_editor(OpenEditor {
-                                            name,
-                                            path: path.clone(),
-                                            is_remote: false,
-                                            is_dirty: false,
-                                        });
-                                        // Scroll to bottom to show latest logs
-                                        self.main_view.scroll_to_bottom();
                                     }
                                 }
                                 ExplorerAction::OpenRemoteStream(stream) => {
-                                    // Save bookmarks for current file before opening new one
-                                    let current_path = self.current_file.clone();
-                                    if let Some(path) = current_path {
-                                        self.save_current_bookmarks(&path);
-                                    }
-
-                                    // Clear buffer before opening
-                                    self.buffer.clear();
-                                    self.filtered_indices.clear();
-                                    self.main_view.clear_selection();
-
-                                    // Open the cache file for the remote stream
-                                    if let Err(e) = self.open_file(stream.cache_path.clone(), None)
-                                    {
+                                    if let Err(e) = self.open_remote_stream(stream.project_name.clone(), stream.cache_path.clone()) {
                                         self.status_bar.set_message(
                                             format!("打开远程流失败: {}", e),
                                             StatusLevel::Error,
                                         );
-                                    } else {
-                                        // Add to open editors
-                                        self.explorer_panel.add_editor(OpenEditor {
-                                            name: stream.project_name.clone(),
-                                            path: stream.cache_path,
-                                            is_remote: true,
-                                            is_dirty: false,
-                                        });
-                                        // Scroll to bottom to show latest logs
-                                        self.main_view.scroll_to_bottom();
                                     }
                                 }
                                 ExplorerAction::OpenFileDialog => {
@@ -1460,105 +1257,103 @@ impl eframe::App for LoglineApp {
                         }
                         ActivityView::Search => {
                             // Global search view
-                            match self.global_search_panel.show(ui, &self.buffer) {
-                                GlobalSearchAction::JumpToLine(buffer_index) => {
-                                    // Jump to the line in main view
-                                    self.main_view.scroll_to_line(buffer_index);
-                                    // Select the line
-                                    self.main_view.set_selection(buffer_index, buffer_index);
+                            if let Some(state) = self.tab_manager.get_active_state() {
+                                match self.global_search_panel.show(ui, &state.buffer) {
+                                    GlobalSearchAction::JumpToLine(buffer_index) => {
+                                        // Jump to the line in main view (need mut access)
+                                        if let Some(state) = self.tab_manager.get_active_state_mut() {
+                                            state.main_view.scroll_to_line(buffer_index);
+                                            state.main_view.set_selection(buffer_index, buffer_index);
+                                        }
+                                    }
+                                    GlobalSearchAction::None => {}
                                 }
-                                GlobalSearchAction::None => {}
                             }
                         }
                         ActivityView::Filters => {
                             // Advanced filters view
-                            if self
-                                .advanced_filters_panel
-                                .show(ui, &mut self.filter.filter)
-                            {
-                                // Filter changed, update the view
-                                self.filter.mark_dirty();
-                                self.update_filter();
+                            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                                if self.advanced_filters_panel.show(ui, &mut state.filter.filter) {
+                                    // Filter changed, update the view
+                                    state.filter.mark_dirty();
+                                    state.update_filter();
+                                }
                             }
                         }
                         ActivityView::Bookmarks => {
                             // Bookmarks view
-                            match self.bookmarks_panel.show(ui, &self.buffer) {
-                                BookmarkAction::JumpToLine(line_number) => {
-                                    // Find the buffer index for this line number
-                                    let index = self
-                                        .buffer
-                                        .iter()
-                                        .position(|e| e.line_number == line_number);
+                            if let Some(state) = self.tab_manager.get_active_state_mut() {
+                                match self.bookmarks_panel.show(ui, &state.buffer) {
+                                    BookmarkAction::JumpToLine(line_number) => {
+                                        // Find the buffer index for this line number
+                                        let index = state
+                                            .buffer
+                                            .iter()
+                                            .position(|e| e.line_number == line_number);
 
-                                    if let Some(index) = index {
-                                        self.main_view.scroll_to_line(index);
-                                        self.main_view.set_selection(index, index);
-                                    }
-                                }
-                                BookmarkAction::RemoveBookmark(line_number) => {
-                                    // Find and remove bookmark
-                                    let index = self
-                                        .buffer
-                                        .iter()
-                                        .position(|e| e.line_number == line_number);
-
-                                    if let Some(index) = index {
-                                        self.buffer.toggle_bookmark(index);
-                                        if self.filter.filter.bookmarks_only {
-                                            self.filter.mark_dirty();
-                                            self.update_filter();
+                                        if let Some(index) = index {
+                                            state.main_view.scroll_to_line(index);
+                                            state.main_view.set_selection(index, index);
                                         }
+                                    }
+                                    BookmarkAction::RemoveBookmark(line_number) => {
+                                        // Find and remove bookmark
+                                        let index = state
+                                            .buffer
+                                            .iter()
+                                            .position(|e| e.line_number == line_number);
 
+                                        if let Some(index) = index {
+                                            state.buffer.toggle_bookmark(index);
+                                            if state.filter.filter.bookmarks_only {
+                                                state.filter.mark_dirty();
+                                                state.update_filter();
+                                            }
+                                        }
                                         // Auto-save bookmarks
-                                        let current_path = self.current_file.clone();
-                                        if let Some(path) = current_path {
-                                            self.save_current_bookmarks(&path);
+                                        if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                                            self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
                                         }
                                     }
-                                }
-                                BookmarkAction::RemoveSegment(indices) => {
-                                    // Remove all bookmarks in the segment
-                                    let count = self.buffer.toggle_bookmarks(&indices);
-                                    if count > 0 {
-                                        if self.filter.filter.bookmarks_only {
-                                            self.filter.mark_dirty();
-                                            self.update_filter();
+                                    BookmarkAction::RemoveSegment(indices) => {
+                                        // Remove all bookmarks in the segment
+                                        let count = state.buffer.toggle_bookmarks(&indices);
+                                        if count > 0 {
+                                            if state.filter.filter.bookmarks_only {
+                                                state.filter.mark_dirty();
+                                                state.update_filter();
+                                            }
                                         }
-
                                         // Auto-save bookmarks
-                                        let current_path = self.current_file.clone();
-                                        if let Some(path) = current_path {
-                                            self.save_current_bookmarks(&path);
+                                        if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                                            self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
                                         }
                                     }
-                                }
-                                BookmarkAction::ClearAll => {
-                                    // Clear all bookmarks
-                                    let all_indices: Vec<usize> = self
-                                        .buffer
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(_, e)| e.bookmarked)
-                                        .map(|(i, _)| i)
-                                        .collect();
-                                    if !all_indices.is_empty() {
-                                        self.buffer.toggle_bookmarks(&all_indices);
-                                        if self.filter.filter.bookmarks_only {
-                                            self.filter.mark_dirty();
-                                            self.update_filter();
+                                    BookmarkAction::ClearAll => {
+                                        // Clear all bookmarks
+                                        let all_indices: Vec<usize> = state
+                                            .buffer
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, e)| e.bookmarked)
+                                            .map(|(i, _)| i)
+                                            .collect();
+                                        if !all_indices.is_empty() {
+                                            state.buffer.toggle_bookmarks(&all_indices);
+                                            if state.filter.filter.bookmarks_only {
+                                                state.filter.mark_dirty();
+                                                state.update_filter();
+                                            }
+                                            self.status_bar
+                                                .set_message("所有书签已清除", StatusLevel::Info);
                                         }
-                                        self.status_bar
-                                            .set_message("所有书签已清除", StatusLevel::Info);
-
                                         // Auto-save bookmarks
-                                        let current_path = self.current_file.clone();
-                                        if let Some(path) = current_path {
-                                            self.save_current_bookmarks(&path);
+                                        if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
+                                            self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
                                         }
                                     }
+                                    BookmarkAction::None => {}
                                 }
-                                BookmarkAction::None => {}
                             }
                         }
                         ActivityView::Settings => {
@@ -1567,7 +1362,7 @@ impl eframe::App for LoglineApp {
                                     self.config.theme =
                                         if dark { Theme::Dark } else { Theme::Light };
                                     self.toolbar_state.dark_theme = dark;
-                                    self.main_view.set_dark_theme(dark);
+                                    self.tab_manager.set_dark_theme(dark);
                                     self.global_search_panel.set_dark_theme(dark);
                                     action = Some(AppAction::UpdateTheme);
                                     let _ = self.config.save();
@@ -1627,23 +1422,130 @@ impl eframe::App for LoglineApp {
 
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
-            let filtered = if self.filter_active {
-                Some(self.filtered_indices.as_slice())
+            // Check if split view is active
+            if self.tab_manager.is_split() {
+                // Split view mode - show two panes
+                let (left_rect, right_rect_opt, split_action) = self.tab_manager.split_view.show(ui);
+                
+                // Handle split action
+                if split_action != crate::ui::split_view::SplitAction::None {
+                    self.tab_manager.handle_split_action(split_action);
+                }
+
+                // Detect which pane the mouse is in for active pane switching
+                if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
+                    if ui.ctx().input(|i| i.pointer.any_click()) {
+                        if left_rect.contains(pointer_pos) {
+                            if self.tab_manager.split_view.active_pane() != crate::ui::split_view::SplitPane::Left {
+                                self.tab_manager.split_view.set_active_pane(crate::ui::split_view::SplitPane::Left);
+                                if let Some(left_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Left) {
+                                    self.tab_manager.tab_bar.active_tab = Some(left_id);
+                                }
+                            }
+                        } else if let Some(right_rect) = right_rect_opt {
+                            if right_rect.contains(pointer_pos) {
+                                if self.tab_manager.split_view.active_pane() != crate::ui::split_view::SplitPane::Right {
+                                    self.tab_manager.split_view.set_active_pane(crate::ui::split_view::SplitPane::Right);
+                                    if let Some(right_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Right) {
+                                        self.tab_manager.tab_bar.active_tab = Some(right_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Collect context actions to handle after rendering
+                let mut left_context_action: Option<ContextMenuAction> = None;
+                let mut right_context_action: Option<ContextMenuAction> = None;
+
+                // Render left pane with unique ID scope
+                if let Some(left_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Left) {
+                    if let Some(state) = self.tab_manager.states.get_mut(&left_id) {
+                        let filtered = if state.filter_active {
+                            Some(state.filtered_indices.as_slice())
+                        } else {
+                            None
+                        };
+
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect).id_salt("left_pane"), |ui| {
+                            let (_, context_action) = state.main_view.show(
+                                ui,
+                                &state.buffer,
+                                filtered,
+                                &state.filter.search,
+                                &self.display_config,
+                            );
+                            left_context_action = context_action;
+                        });
+                    }
+                }
+
+                // Render right pane with unique ID scope
+                if let Some(right_rect) = right_rect_opt {
+                    if let Some(right_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Right) {
+                        if let Some(state) = self.tab_manager.states.get_mut(&right_id) {
+                            let filtered = if state.filter_active {
+                                Some(state.filtered_indices.as_slice())
+                            } else {
+                                None
+                            };
+
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect).id_salt("right_pane"), |ui| {
+                                let (_, context_action) = state.main_view.show(
+                                    ui,
+                                    &state.buffer,
+                                    filtered,
+                                    &state.filter.search,
+                                    &self.display_config,
+                                );
+                                right_context_action = context_action;
+                            });
+                        }
+                    }
+                }
+
+                // Handle context menu actions after rendering
+                if let Some(ctx_action) = left_context_action {
+                    self.handle_context_menu_action(ctx_action, ctx.clone());
+                }
+                if let Some(ctx_action) = right_context_action {
+                    self.handle_context_menu_action(ctx_action, ctx.clone());
+                }
             } else {
-                None
-            };
+                // Single pane mode
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    let filtered = if state.filter_active {
+                        Some(state.filtered_indices.as_slice())
+                    } else {
+                        None
+                    };
 
-            let (_, context_action) = self.main_view.show(
-                ui,
-                &self.buffer,
-                filtered,
-                &self.filter.search,
-                &self.display_config,
-            );
+                    let (_, context_action) = state.main_view.show(
+                        ui,
+                        &state.buffer,
+                        filtered,
+                        &state.filter.search,
+                        &self.display_config,
+                    );
 
-            // Handle context menu actions
-            if let Some(ctx_action) = context_action {
-                self.handle_context_menu_action(ctx_action, ctx.clone());
+                    // Handle context menu actions
+                    if let Some(ctx_action) = context_action {
+                        self.handle_context_menu_action(ctx_action, ctx.clone());
+                    }
+                } else {
+                    // No tab open - show welcome message
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            ui.heading(t::no_open_tabs());
+                            ui.add_space(20.0);
+                            if ui.button("📁 打开文件").clicked() {
+                                self.file_picker_dialog.show_dialog();
+                            }
+                        });
+                    });
+                }
             }
         });
 
@@ -1655,28 +1557,9 @@ impl eframe::App for LoglineApp {
         // File picker dialog
         match self.file_picker_dialog.show(ctx) {
             FilePickerAction::OpenFile(path, encoding) => {
-                // Clear buffer before opening
-                self.buffer.clear();
-                self.filtered_indices.clear();
-                self.main_view.clear_selection();
-
                 if let Err(e) = self.open_file(path.clone(), encoding) {
                     self.status_bar
                         .set_message(format!("打开文件失败: {}", e), StatusLevel::Error);
-                } else {
-                    // Add to explorer
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.display().to_string());
-                    self.explorer_panel.add_editor(OpenEditor {
-                        name,
-                        path: path.clone(),
-                        is_remote: false,
-                        is_dirty: false,
-                    });
-                    // Scroll to bottom to show latest logs
-                    self.main_view.scroll_to_bottom();
                 }
             }
             FilePickerAction::Cancel => {}
@@ -1712,7 +1595,7 @@ impl eframe::App for LoglineApp {
 
         // Request repaint for real-time updates only when actively viewing a file
         // Reduced repaint frequency when remote server is running but no file is open
-        if self.watcher.is_some() {
+        if self.tab_manager.any_watching() {
             // Actively watching a file, need frequent updates
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if self.remote_server.is_running() {
@@ -1731,12 +1614,28 @@ impl eframe::App for LoglineApp {
         // Stop remote server
         self.remote_server.stop();
 
-        // Close file
-        self.close_file();
+        // Close all tabs
+        self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
     }
 }
 
 impl LoglineApp {
+    /// Sync explorer panel's open editors list with tab manager
+    fn sync_explorer_with_tabs(&mut self) {
+        use crate::ui::explorer_panel::OpenEditor;
+        self.explorer_panel.open_editors = self.tab_manager.tab_bar.tabs
+            .iter()
+            .map(|tab| {
+                OpenEditor {
+                    name: tab.name.clone(),
+                    path: tab.path.clone(),
+                    is_remote: tab.is_remote,
+                    is_dirty: false,
+                }
+            })
+            .collect();
+    }
+
     /// Show go-to-line dialog
     fn show_goto_dialog(&mut self, ctx: &egui::Context) {
         egui::Window::new("Go to Line")
@@ -1769,14 +1668,16 @@ impl LoglineApp {
 
                 if self.goto_dialog.submit {
                     if let Ok(line) = self.goto_dialog.input.parse::<usize>() {
-                        // Find index for this line number
-                        if let Some((idx, _)) = self
-                            .buffer
-                            .iter()
-                            .enumerate()
-                            .find(|(_, e)| e.line_number == line)
-                        {
-                            self.main_view.scroll_to_line(idx);
+                        // Find index for this line number in active tab
+                        if let Some(state) = self.tab_manager.get_active_state_mut() {
+                            if let Some((idx, _)) = state
+                                .buffer
+                                .iter()
+                                .enumerate()
+                                .find(|(_, e)| e.line_number == line)
+                            {
+                                state.main_view.scroll_to_line(idx);
+                            }
                         }
                     }
                     self.goto_dialog.open = false;

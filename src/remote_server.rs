@@ -301,13 +301,13 @@ impl RemoteServer {
         let mut reader = BufReader::new(stream);
 
         // Wait for handshake with timeout
-        let project_name = match tokio::time::timeout(
+        let handshake_payload = match tokio::time::timeout(
             Duration::from_secs(30),
             Self::wait_for_handshake_async(&mut reader),
         )
         .await
         {
-            Ok(Ok(name)) => name,
+            Ok(Ok(payload)) => payload,
             Ok(Err(e)) => {
                 tracing::warn!("Handshake failed from {}: {}", addr, e);
                 return Ok(());
@@ -318,18 +318,38 @@ impl RemoteServer {
             }
         };
 
+        let project_name = handshake_payload.project_name.clone();
         tracing::info!("Agent '{}' connected from {}", project_name, addr);
 
         // Generate unique stream ID
-        let stream_id = format!("{}@{}:{}", project_name, addr.ip(), addr.port());
+        // Use agent_id if available, otherwise fall back to ip:port
+        let stream_id = if let Some(ref agent_id) = handshake_payload.agent_id {
+            tracing::info!("Agent ID: {}", agent_id);
+            format!("{}@{}", project_name, agent_id)
+        } else {
+            tracing::warn!(
+                "No agent ID provided, using ip:port (may cause duplicates on reconnect)"
+            );
+            format!("{}@{}:{}", project_name, addr.ip(), addr.port())
+        };
 
         // Setup cache file
-        let cache_path = config.cache_dir.join(format!(
-            "{}_{}_{}.log",
-            sanitize_filename(&project_name),
-            addr.ip().to_string().replace(['.', ':'], "_"),
-            addr.port()
-        ));
+        // Use agent_id in filename if available, so reconnections write to the same file
+        let cache_path = if let Some(ref agent_id) = handshake_payload.agent_id {
+            config.cache_dir.join(format!(
+                "{}_{}.log",
+                sanitize_filename(&project_name),
+                agent_id
+            ))
+        } else {
+            // Fallback for old agents without agent_id
+            config.cache_dir.join(format!(
+                "{}_{}_{}.log",
+                sanitize_filename(&project_name),
+                addr.ip().to_string().replace(['.', ':'], "_"),
+                addr.port()
+            ))
+        };
 
         let cache_file = OpenOptions::new()
             .create(true)
@@ -339,29 +359,55 @@ impl RemoteServer {
 
         let mut writer = std::io::BufWriter::new(cache_file);
 
-        // Register stream
-        {
+        // Register or update stream
+        let is_reconnection = {
             let mut streams_guard = streams.write().unwrap();
-            streams_guard.insert(
-                stream_id.clone(),
-                RemoteStream {
-                    stream_id: stream_id.clone(),
-                    project_name: project_name.clone(),
-                    status: ConnectionStatus::Online,
-                    cache_path: cache_path.clone(),
-                    last_activity: Instant::now(),
-                    remote_addr: addr,
-                    bytes_received: 0,
-                },
-            );
-        }
+            let is_reconnection = streams_guard.contains_key(&stream_id);
 
-        let _ = event_tx.send(ServerEvent::AgentConnected {
-            project_name: project_name.clone(),
-            stream_id: stream_id.clone(),
-            remote_addr: addr,
-            cache_path: cache_path.clone(),
-        });
+            if let Some(existing_stream) = streams_guard.get_mut(&stream_id) {
+                // Reconnection: update existing stream
+                tracing::info!(
+                    "Agent '{}' reconnected (stream_id: {})",
+                    project_name,
+                    stream_id
+                );
+                existing_stream.status = ConnectionStatus::Online;
+                existing_stream.last_activity = Instant::now();
+                existing_stream.remote_addr = addr;
+                // Keep existing bytes_received
+            } else {
+                // New connection: create new stream
+                tracing::info!(
+                    "New agent '{}' connected (stream_id: {})",
+                    project_name,
+                    stream_id
+                );
+                streams_guard.insert(
+                    stream_id.clone(),
+                    RemoteStream {
+                        stream_id: stream_id.clone(),
+                        project_name: project_name.clone(),
+                        status: ConnectionStatus::Online,
+                        cache_path: cache_path.clone(),
+                        last_activity: Instant::now(),
+                        remote_addr: addr,
+                        bytes_received: 0,
+                    },
+                );
+            }
+
+            is_reconnection
+        };
+
+        // Only send AgentConnected event for new connections, not reconnections
+        if !is_reconnection {
+            let _ = event_tx.send(ServerEvent::AgentConnected {
+                project_name: project_name.clone(),
+                stream_id: stream_id.clone(),
+                remote_addr: addr,
+                cache_path: cache_path.clone(),
+            });
+        }
 
         // Main receive loop
         let mut total_bytes = 0u64;
@@ -506,7 +552,7 @@ impl RemoteServer {
     /// Wait for and process handshake frame asynchronously
     async fn wait_for_handshake_async(
         reader: &mut BufReader<TcpStream>,
-    ) -> Result<String, ProtocolError> {
+    ) -> Result<crate::protocol::HandshakePayload, ProtocolError> {
         let frame = Self::read_frame_async(reader).await?;
 
         if frame.message_type != MessageType::Handshake {
@@ -515,8 +561,7 @@ impl RemoteServer {
             ));
         }
 
-        let handshake = frame.parse_handshake()?;
-        Ok(handshake.project_name)
+        frame.parse_handshake()
     }
 }
 

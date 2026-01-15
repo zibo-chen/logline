@@ -1,6 +1,6 @@
 [package]
 name = "logline"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "A high-performance real-time log viewer"
 authors = ["zibo chen <qw.54@163.com>"]

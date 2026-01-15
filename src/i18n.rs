@@ -296,20 +296,6 @@ impl Translations {
         }
     }
 
-    pub fn less() -> &'static str {
-        match current_language() {
-            Language::English => "Less",
-            Language::Chinese => "收起",
-        }
-    }
-
-    pub fn more() -> &'static str {
-        match current_language() {
-            Language::English => "More",
-            Language::Chinese => "展开",
-        }
-    }
-
     pub fn advanced_filters() -> &'static str {
         match current_language() {
             Language::English => "Advanced Filters",
@@ -1029,6 +1015,78 @@ impl Translations {
         match current_language() {
             Language::English => "Clear All Bookmarks",
             Language::Chinese => "清除所有书签",
+        }
+    }
+
+    // ============ Tab Bar ============
+    pub fn close() -> &'static str {
+        match current_language() {
+            Language::English => "Close",
+            Language::Chinese => "关闭",
+        }
+    }
+
+    pub fn close_others() -> &'static str {
+        match current_language() {
+            Language::English => "Close Others",
+            Language::Chinese => "关闭其他",
+        }
+    }
+
+    pub fn close_tabs_to_right() -> &'static str {
+        match current_language() {
+            Language::English => "Close Tabs to the Right",
+            Language::Chinese => "关闭右侧标签",
+        }
+    }
+
+    pub fn close_all() -> &'static str {
+        match current_language() {
+            Language::English => "Close All",
+            Language::Chinese => "关闭全部",
+        }
+    }
+
+    pub fn remote_stream() -> &'static str {
+        match current_language() {
+            Language::English => "Remote Stream",
+            Language::Chinese => "远程流",
+        }
+    }
+
+    pub fn no_open_tabs() -> &'static str {
+        match current_language() {
+            Language::English => "No open files. Open a file or connect a remote stream.",
+            Language::Chinese => "没有打开的文件。请打开文件或连接远程流。",
+        }
+    }
+
+    // Split view related translations
+    pub fn split_view() -> &'static str {
+        match current_language() {
+            Language::English => "Split",
+            Language::Chinese => "分屏",
+        }
+    }
+
+    pub fn close_split() -> &'static str {
+        match current_language() {
+            Language::English => "Close Split",
+            Language::Chinese => "关闭分屏",
+        }
+    }
+
+    pub fn toggle_split_tooltip() -> &'static str {
+        match current_language() {
+            Language::English => "Toggle split view to show two files side by side",
+            Language::Chinese => "切换分屏视图，并排显示两个文件",
+        }
+    }
+
+    pub fn open_in_split() -> &'static str {
+        match current_language() {
+            Language::English => "Open in Split View",
+            Language::Chinese => "在分屏中打开",
         }
     }
 }
