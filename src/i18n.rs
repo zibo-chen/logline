@@ -817,6 +817,13 @@ impl Translations {
         }
     }
 
+    pub fn letter_spacing() -> &'static str {
+        match current_language() {
+            Language::English => "Letter spacing:",
+            Language::Chinese => "字符间距:",
+        }
+    }
+
     pub fn show_line_numbers() -> &'static str {
         match current_language() {
             Language::English => "Show line numbers",

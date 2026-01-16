@@ -95,6 +95,19 @@ impl SettingsPanel {
                 }
             });
 
+            ui.horizontal(|ui| {
+                ui.label(t::letter_spacing());
+                if ui
+                    .add(egui::Slider::new(
+                        &mut self.display_config.letter_spacing,
+                        -2.0..=10.0,
+                    ))
+                    .changed()
+                {
+                    action = SettingsAction::DisplayConfigChanged;
+                }
+            });
+
             if ui
                 .checkbox(
                     &mut self.display_config.show_line_numbers,

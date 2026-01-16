@@ -173,6 +173,8 @@ pub struct DisplayConfig {
     pub font_size: f32,
     /// Line height multiplier
     pub line_height: f32,
+    /// Extra letter spacing in pixels
+    pub letter_spacing: f32,
     /// Show line numbers
     pub show_line_numbers: bool,
     /// Line number width in characters
@@ -192,6 +194,7 @@ impl Default for DisplayConfig {
         Self {
             font_size: 13.0,
             line_height: 1.4,
+            letter_spacing: 0.0,
             show_line_numbers: true,
             line_number_width: 6,
             show_timestamp: false,

@@ -120,11 +120,20 @@ impl McpServer {
 
     /// Stop the MCP server
     pub fn stop(&mut self) {
+        tracing::info!("Stopping MCP server");
+
+        // Cancel all ongoing operations
         self.cancellation_token.cancel();
 
+        // Send shutdown signal
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
+
+        // Give server a moment to clean up
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        tracing::info!("MCP server stopped");
     }
 
     /// Check if server is running

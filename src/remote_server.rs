@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -120,6 +121,7 @@ pub struct RemoteServer {
     event_tx: Sender<ServerEvent>,
     event_rx: Receiver<ServerEvent>,
     shutdown_tx: Option<mpsc::Sender<()>>,
+    server_thread: Option<JoinHandle<()>>,
 }
 
 impl RemoteServer {
@@ -134,6 +136,7 @@ impl RemoteServer {
             event_tx,
             event_rx,
             shutdown_tx: None,
+            server_thread: None,
         }
     }
 
@@ -174,7 +177,7 @@ impl RemoteServer {
         let config = self.config.clone();
 
         // Spawn the async server in a separate thread with its own runtime
-        std::thread::spawn(move || {
+        let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -187,13 +190,22 @@ impl RemoteServer {
                     tracing::error!("Server error: {}", e);
                 }
             });
+
+            tracing::debug!("Server thread exiting");
         });
+
+        self.server_thread = Some(server_thread);
 
         Ok(())
     }
 
     /// Stop the server
     pub fn stop(&mut self) {
+        if !self.running.load(Ordering::Relaxed) {
+            return; // Already stopped
+        }
+
+        tracing::info!("Stopping remote server");
         self.running.store(false, Ordering::Relaxed);
 
         // Send shutdown signal
@@ -201,7 +213,31 @@ impl RemoteServer {
             let _ = tx.blocking_send(());
         }
 
+        // Wait for server thread to finish with timeout
+        if let Some(thread) = self.server_thread.take() {
+            // Use a channel to implement timeout for thread join
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+            std::thread::spawn(move || {
+                let _ = thread.join();
+                let _ = done_tx.send(());
+            });
+
+            // Wait up to 200ms for graceful shutdown
+            match done_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(_) => {
+                    tracing::debug!("Remote server thread finished gracefully");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Remote server thread did not finish in time, continuing anyway"
+                    );
+                }
+            }
+        }
+
         let _ = self.event_tx.send(ServerEvent::Stopped);
+        tracing::info!("Remote server stopped");
     }
 
     /// Check if server is running

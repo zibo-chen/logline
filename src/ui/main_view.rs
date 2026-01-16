@@ -372,6 +372,7 @@ impl MainView {
                     search_query,
                     search.config.case_sensitive,
                     text_available_width,
+                    display_config.letter_spacing,
                 );
 
                 // Layout the text with the context fonts

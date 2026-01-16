@@ -115,7 +115,14 @@ impl Highlighter {
         search_query: Option<&str>,
         case_sensitive: bool,
     ) -> LayoutJob {
-        self.highlight_line_with_wrap(content, level, search_query, case_sensitive, f32::INFINITY)
+        self.highlight_line_with_wrap(
+            content,
+            level,
+            search_query,
+            case_sensitive,
+            f32::INFINITY,
+            0.0,
+        )
     }
 
     /// Highlight a log line with optional wrap width and return a LayoutJob for egui
@@ -126,6 +133,7 @@ impl Highlighter {
         search_query: Option<&str>,
         case_sensitive: bool,
         wrap_width: f32,
+        letter_spacing: f32,
     ) -> LayoutJob {
         let mut job = LayoutJob::default();
         job.wrap.max_width = wrap_width;
@@ -136,6 +144,7 @@ impl Highlighter {
                 0.0,
                 TextFormat {
                     color: level.map(|l| l.color()).unwrap_or(self.theme.text),
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
             );
@@ -197,6 +206,7 @@ impl Highlighter {
                     0.0,
                     TextFormat {
                         color: base_color,
+                        extra_letter_spacing: letter_spacing,
                         ..Default::default()
                     },
                 );
@@ -206,23 +216,28 @@ impl Highlighter {
             let format = match hl_type {
                 HighlightType::Timestamp => TextFormat {
                     color: self.theme.timestamp,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
                 HighlightType::Number => TextFormat {
                     color: self.theme.number,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
                 HighlightType::String => TextFormat {
                     color: self.theme.string,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
                 HighlightType::JsonSyntax => TextFormat {
                     color: self.theme.keyword,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
                 HighlightType::SearchMatch => TextFormat {
                     color: Color32::BLACK,
                     background: self.theme.search_highlight,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
             };
@@ -238,6 +253,7 @@ impl Highlighter {
                 0.0,
                 TextFormat {
                     color: base_color,
+                    extra_letter_spacing: letter_spacing,
                     ..Default::default()
                 },
             );

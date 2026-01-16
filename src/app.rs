@@ -1932,14 +1932,39 @@ impl eframe::App for LoglineApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        tracing::info!("Application exit started");
+        
         // Save configuration
         let _ = self.config.save();
 
+        // Stop MCP server first (before shutting down tokio runtime)
+        if let Some(mut server) = self.mcp_server.take() {
+            tracing::info!("Stopping MCP server");
+            server.stop();
+        }
+
         // Stop remote server
+        tracing::info!("Stopping remote server");
         self.remote_server.stop();
 
-        // Close all tabs
+        // Close all tabs (this will stop file watchers)
+        tracing::info!("Closing all tabs");
         self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
+
+        // Explicitly shutdown tokio runtime with timeout
+        if let Some(runtime) = self.tokio_runtime.take() {
+            tracing::info!("Shutting down tokio runtime");
+            // Drop the runtime which will wait for tasks to complete
+            // This is blocking but necessary for clean shutdown
+            std::thread::spawn(move || {
+                // Set a timeout for runtime shutdown on a separate thread
+                drop(runtime);
+            });
+            // Give it a short time to cleanup, then continue
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        
+        tracing::info!("Application exit completed");
     }
 }
 
