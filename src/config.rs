@@ -1,5 +1,6 @@
 //! Application configuration and persistence
 
+use crate::grok_parser::GrokConfig;
 use crate::i18n::Language;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,12 +21,16 @@ pub struct AppConfig {
     pub mcp: McpServerConfig,
     /// Remote server configuration
     pub remote_server: RemoteServerConfig,
+    /// Grok parser configuration
+    pub grok: GrokConfig,
     /// Recent files list
     pub recent_files: Vec<PathBuf>,
     /// Maximum recent files to keep
     pub max_recent_files: usize,
     /// File encoding preferences (file path -> encoding name)
     pub file_encodings: HashMap<String, String>,
+    /// Per-file Grok configuration (file path -> grok pattern config)
+    pub file_grok_configs: HashMap<String, FileGrokConfig>,
     /// Current theme
     pub theme: Theme,
     /// Application language
@@ -40,9 +45,11 @@ impl Default for AppConfig {
             buffer: BufferConfig::default(),
             mcp: McpServerConfig::default(),
             remote_server: RemoteServerConfig::default(),
+            grok: GrokConfig::default(),
             recent_files: Vec::new(),
             max_recent_files: 10,
             file_encodings: HashMap::new(),
+            file_grok_configs: HashMap::new(),
             theme: Theme::Dark,
             language: Language::default(),
         }
@@ -135,6 +142,42 @@ impl AppConfig {
             self.file_encodings.remove(&path_str);
         }
     }
+
+    /// Set grok config for a file
+    pub fn set_file_grok_config(&mut self, path: PathBuf, config: Option<FileGrokConfig>) {
+        let path_str = path.to_string_lossy().to_string();
+        if let Some(cfg) = config {
+            self.file_grok_configs.insert(path_str, cfg);
+        } else {
+            self.file_grok_configs.remove(&path_str);
+        }
+    }
+}
+
+/// Per-file Grok configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileGrokConfig {
+    /// Whether grok parsing is enabled for this file
+    pub enabled: bool,
+    /// Pattern type: "builtin" or "custom"
+    pub pattern_type: String,
+    /// For builtin patterns: the pattern name
+    pub builtin_pattern: Option<String>,
+    /// For custom patterns: the custom pattern name
+    pub custom_pattern_name: Option<String>,
+    /// Inline custom pattern (from AI assist, not in global custom patterns list)
+    pub inline_pattern: Option<InlineGrokPattern>,
+}
+
+/// Inline grok pattern (for AI-generated patterns that are file-specific)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineGrokPattern {
+    /// Pattern name
+    pub name: String,
+    /// Grok pattern string
+    pub pattern: String,
+    /// Display template
+    pub display_template: String,
 }
 
 /// Window configuration
@@ -187,6 +230,8 @@ pub struct DisplayConfig {
     pub tab_size: usize,
     /// Show row separator lines
     pub show_row_separator: bool,
+    /// Show grok parsed fields
+    pub show_grok_fields: bool,
 }
 
 impl Default for DisplayConfig {
@@ -201,6 +246,7 @@ impl Default for DisplayConfig {
             show_level: false,
             tab_size: 4,
             show_row_separator: true,
+            show_grok_fields: true,
         }
     }
 }

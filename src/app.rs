@@ -2,6 +2,7 @@
 
 use crate::bookmarks::BookmarksStore;
 use crate::config::{AppConfig, DisplayConfig, Shortcuts, Theme};
+use crate::grok_parser::GrokParser;
 use crate::i18n::{set_language, Translations as t};
 use crate::log_buffer::LogBufferConfig;
 use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
@@ -14,6 +15,7 @@ use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
+use crate::ui::grok_panel::{GrokPanel, GrokPanelAction};
 use crate::ui::main_view::ContextMenuAction;
 use crate::ui::search_bar::{SearchBar, SearchBarAction};
 use crate::ui::settings_panel::{SettingsAction, SettingsPanel};
@@ -79,6 +81,10 @@ pub struct LoglineApp {
     settings_panel: SettingsPanel,
     /// Global search panel
     global_search_panel: GlobalSearchPanel,
+    /// Grok parser panel
+    grok_panel: GrokPanel,
+    /// Grok parser instance
+    grok_parser: GrokParser,
     /// Sidebar visibility
     sidebar_visible: bool,
 
@@ -198,6 +204,7 @@ impl LoglineApp {
                 let buffer_config = LogBufferConfig {
                     max_lines: config.buffer.max_lines,
                     auto_trim: config.buffer.auto_trim,
+                    chunk_size: 5_000,     // Load 5k lines per chunk when scrolling up
                 };
                 let mut manager = TabManager::new(buffer_config);
                 manager.set_dark_theme(config.theme == Theme::Dark);
@@ -233,6 +240,29 @@ impl LoglineApp {
                 let mut panel = GlobalSearchPanel::new();
                 panel.set_dark_theme(config.theme == Theme::Dark);
                 panel
+            },
+            grok_panel: {
+                let mut panel = GrokPanel::new();
+                panel.load_from_config(&config.grok);
+                panel
+            },
+            grok_parser: {
+                let mut parser = GrokParser::new();
+                // Load custom patterns from config
+                parser.import_custom_patterns(config.grok.custom_patterns.clone());
+                // Load custom definitions
+                for (name, pattern) in &config.grok.custom_definitions {
+                    parser.add_pattern_definition(name, pattern);
+                }
+                // Set active pattern if configured
+                if let Some(builtin) = config.grok.builtin_pattern {
+                    let _ = parser.set_builtin_pattern(builtin);
+                } else if let Some(ref custom_name) = config.grok.custom_pattern_name {
+                    if let Some(custom) = config.grok.custom_patterns.iter().find(|p| &p.name == custom_name) {
+                        let _ = parser.set_custom_pattern(&custom.name, &custom.pattern);
+                    }
+                }
+                parser
             },
             // Custom titlebar - must be before config is moved
             title_bar: TitleBar::new(
@@ -333,8 +363,11 @@ impl LoglineApp {
 
         // Sync to MCP server
         if let Some(ref mcp_server) = self.mcp_server {
-            mcp_server.add_local_file(path);
+            mcp_server.add_local_file(path.clone());
         }
+
+        // Restore saved grok config for this file
+        self.restore_file_grok_config(tab_id, &path);
 
         // Scroll to bottom for new file
         if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
@@ -431,6 +464,231 @@ impl LoglineApp {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Change the grok pattern for the current tab only
+    pub fn change_grok_pattern(&mut self, selection: crate::ui::status_bar::GrokPatternSelection) {
+        use crate::config::FileGrokConfig;
+        use crate::grok_parser::GrokParser;
+        use crate::ui::status_bar::GrokPatternSelection;
+
+        // Get the active tab
+        let Some(state) = self.tab_manager.get_active_state_mut() else {
+            return;
+        };
+
+        let file_path = state.path.clone();
+
+        match selection {
+            GrokPatternSelection::None => {
+                // Disable grok parsing for this tab
+                state.grok_parser = None;
+                state.grok_config = None;
+                state.grok_parse_progress = 0;
+                
+                // Clear grok fields for this tab only
+                for entry in state.buffer.iter_mut() {
+                    entry.clear_grok_fields();
+                }
+                
+                // Remove file-specific config
+                self.config.set_file_grok_config(file_path, None);
+                
+                self.status_bar.set_message(t::grok_pattern_cleared(), StatusLevel::Info);
+            }
+            GrokPatternSelection::Builtin(pattern) => {
+                // Create a new parser for this tab
+                let mut parser = GrokParser::new();
+                // Import custom patterns from global config
+                parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
+                for (name, pat) in &self.config.grok.custom_definitions {
+                    parser.add_pattern_definition(name, pat);
+                }
+                
+                if let Err(e) = parser.set_builtin_pattern(pattern) {
+                    self.status_bar.set_message(
+                        format!("{}: {}", t::grok_pattern_error(), e),
+                        StatusLevel::Error,
+                    );
+                    return;
+                }
+                
+                // Get state again after error check
+                let state = self.tab_manager.get_active_state_mut().unwrap();
+                
+                state.grok_parser = Some(parser);
+                state.grok_config = Some(FileGrokConfig {
+                    enabled: true,
+                    pattern_type: "builtin".to_string(),
+                    builtin_pattern: Some(pattern.display_name().to_string()),
+                    custom_pattern_name: None,
+                    inline_pattern: None,
+                });
+                state.grok_parse_progress = 0;
+                
+                // Clear grok fields to reparse
+                for entry in state.buffer.iter_mut() {
+                    entry.clear_grok_fields();
+                }
+                
+                // Save file-specific config
+                let config = state.grok_config.clone();
+                let path = state.path.clone();
+                self.config.set_file_grok_config(path, config);
+                
+                self.status_bar.set_message(
+                    format!("{}: {}", t::grok_active_pattern(), pattern.display_name()),
+                    StatusLevel::Success,
+                );
+            }
+            GrokPatternSelection::Custom(name) => {
+                // Find custom pattern from global config
+                let custom = self.config.grok.custom_patterns.iter().find(|p| p.name == name).cloned();
+                
+                let Some(custom) = custom else {
+                    self.status_bar.set_message(
+                        format!("{}: {}", t::grok_pattern_error(), name),
+                        StatusLevel::Error,
+                    );
+                    return;
+                };
+                
+                // Create a new parser for this tab
+                let mut parser = GrokParser::new();
+                parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
+                for (n, pat) in &self.config.grok.custom_definitions {
+                    parser.add_pattern_definition(n, pat);
+                }
+                
+                let template = if custom.display_template.is_empty() {
+                    None
+                } else {
+                    Some(custom.display_template.as_str())
+                };
+                
+                if let Err(e) = parser.set_custom_pattern_with_template(
+                    &name,
+                    &custom.pattern,
+                    template,
+                ) {
+                    self.status_bar.set_message(
+                        format!("{}: {}", t::grok_pattern_error(), e),
+                        StatusLevel::Error,
+                    );
+                    return;
+                }
+                
+                // Get state again after error check
+                let state = self.tab_manager.get_active_state_mut().unwrap();
+                
+                state.grok_parser = Some(parser);
+                state.grok_config = Some(FileGrokConfig {
+                    enabled: true,
+                    pattern_type: "custom".to_string(),
+                    builtin_pattern: None,
+                    custom_pattern_name: Some(name.clone()),
+                    inline_pattern: None,
+                });
+                state.grok_parse_progress = 0;
+                
+                // Clear grok fields to reparse
+                for entry in state.buffer.iter_mut() {
+                    entry.clear_grok_fields();
+                }
+                
+                // Save file-specific config
+                let config = state.grok_config.clone();
+                let path = state.path.clone();
+                self.config.set_file_grok_config(path, config);
+                
+                self.status_bar.set_message(
+                    format!("{}: {}", t::grok_active_pattern(), name),
+                    StatusLevel::Success,
+                );
+            }
+        }
+        
+        // Save config
+        if let Err(e) = self.config.save() {
+            tracing::error!("Failed to save config: {}", e);
+        }
+    }
+
+    /// Restore saved grok config for a file when opening it
+    fn restore_file_grok_config(&mut self, tab_id: crate::ui::tab_bar::TabId, path: &PathBuf) {
+        use crate::grok_parser::{GrokParser, BuiltinPattern};
+        
+        let path_str = path.to_string_lossy().to_string();
+        let saved_config = self.config.file_grok_configs.get(&path_str).cloned();
+        
+        let Some(file_config) = saved_config else {
+            return; // No saved config for this file
+        };
+        
+        if !file_config.enabled {
+            return; // Grok was disabled for this file
+        }
+        
+        // Create a parser for this tab
+        let mut parser = GrokParser::new();
+        parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
+        for (name, pat) in &self.config.grok.custom_definitions {
+            parser.add_pattern_definition(name, pat);
+        }
+        
+        // Set the pattern based on saved config
+        let pattern_set = match file_config.pattern_type.as_str() {
+            "builtin" => {
+                if let Some(ref pattern_name) = file_config.builtin_pattern {
+                    // Find builtin pattern by name
+                    BuiltinPattern::all()
+                        .iter()
+                        .find(|p| p.display_name() == pattern_name)
+                        .and_then(|pattern| parser.set_builtin_pattern(*pattern).ok())
+                        .is_some()
+                } else {
+                    false
+                }
+            }
+            "custom" => {
+                if let Some(ref custom_name) = file_config.custom_pattern_name {
+                    if let Some(custom) = self.config.grok.custom_patterns.iter().find(|p| &p.name == custom_name) {
+                        let template = if custom.display_template.is_empty() {
+                            None
+                        } else {
+                            Some(custom.display_template.as_str())
+                        };
+                        parser.set_custom_pattern_with_template(custom_name, &custom.pattern, template).is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            "inline" => {
+                if let Some(ref inline) = file_config.inline_pattern {
+                    let template = if inline.display_template.is_empty() {
+                        None
+                    } else {
+                        Some(inline.display_template.as_str())
+                    };
+                    parser.set_custom_pattern_with_template(&inline.name, &inline.pattern, template).is_ok()
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        
+        if pattern_set {
+            if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
+                state.grok_parser = Some(parser);
+                state.grok_config = Some(file_config);
+                state.grok_parse_progress = 0;
+                tracing::info!("Restored grok config for file: {}", path.display());
             }
         }
     }
@@ -1010,6 +1268,68 @@ impl eframe::App for LoglineApp {
 
         // Process background messages for all tabs
         self.tab_manager.process_all_reader_messages();
+        
+        // Check if any tab needs to load more data (lazy loading)
+        // This is triggered when user scrolls near the top of the loaded data
+        for state in self.tab_manager.states.values_mut() {
+            let total_rows = state.buffer.len();
+            let visible_range = state.main_view.get_visible_range(total_rows);
+            if state.buffer.should_load_more(visible_range.start) {
+                state.request_load_more();
+            }
+        }
+        
+        // Apply grok parsing incrementally for each tab (only parse visible entries on-demand)
+        // This avoids parsing the entire file, making format switching instant
+        {
+            const MAX_PARSE_PER_FRAME: usize = 100; // Increased since we're only parsing visible area
+            
+            // Parse entries in all tabs - prioritize visible entries
+            for state in self.tab_manager.states.values_mut() {
+                // Skip if this tab doesn't have a grok parser
+                let Some(ref parser) = state.grok_parser else {
+                    continue;
+                };
+                
+                let Some(pattern) = parser.active_pattern() else {
+                    continue;
+                };
+                
+                let total_len = state.buffer.len();
+                if total_len == 0 {
+                    continue;
+                }
+                
+                // Get visible range for on-demand parsing
+                let visible_range = state.main_view.get_visible_range(total_len);
+                let mut parsed_count = 0;
+                
+                // Priority 1: Parse visible entries first
+                for i in visible_range.clone() {
+                    if parsed_count >= MAX_PARSE_PER_FRAME {
+                        break;
+                    }
+                    
+                    if let Some(entry) = state.buffer.get_mut(i) {
+                        if entry.grok_fields.is_none() {
+                            if let Some(fields) = pattern.parse(&entry.content) {
+                                if !fields.is_empty() {
+                                    entry.set_grok_fields(fields.fields);
+                                }
+                            }
+                            parsed_count += 1;
+                        }
+                    }
+                }
+                
+                // Note: We no longer track grok_parse_progress for sequential parsing
+                // since we now parse on-demand based on visible area
+                
+                if parsed_count > 0 {
+                    tracing::trace!("Parsed {} visible entries with grok pattern this frame", parsed_count);
+                }
+            }
+        }
 
         // Process remote server events
         self.process_server_events();
@@ -1154,6 +1474,36 @@ impl eframe::App for LoglineApp {
                 } else {
                     (None, None, None, true, None, 0)
                 };
+
+            // Build grok pattern info for status bar (from current tab's grok parser)
+            let grok_info = {
+                use crate::ui::status_bar::GrokPatternInfo;
+                use crate::grok_parser::BuiltinPattern;
+                
+                let mut info = GrokPatternInfo::default();
+                
+                // Get current tab's grok state
+                if let Some(state) = self.tab_manager.get_active_state() {
+                    if let Some(ref parser) = state.grok_parser {
+                        info.enabled = true;
+                        info.current_pattern_name = parser.active_pattern_name().map(|s| s.to_string());
+                    } else {
+                        info.enabled = false;
+                        info.current_pattern_name = None;
+                    }
+                }
+                
+                // Available patterns come from global config
+                info.builtin_patterns = BuiltinPattern::all()
+                    .iter()
+                    .map(|p| (*p, p.display_name()))
+                    .collect();
+                info.custom_pattern_names = self.config.grok.custom_patterns
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                info
+            };
             
             if let Some(buffer) = buffer_ref {
                 if let Some(action) = self.status_bar.show(
@@ -1164,10 +1514,14 @@ impl eframe::App for LoglineApp {
                     auto_scroll,
                     filtered_count,
                     selected_count,
+                    Some(&grok_info),
                 ) {
                     match action {
                         crate::ui::status_bar::StatusBarAction::ChangeEncoding(encoding) => {
                             self.change_encoding(encoding);
+                        }
+                        crate::ui::status_bar::StatusBarAction::ChangeGrokPattern(selection) => {
+                            self.change_grok_pattern(selection);
                         }
                     }
                 }
@@ -1478,6 +1832,73 @@ impl eframe::App for LoglineApp {
                                 }
                             }
                         }
+                        ActivityView::Grok => {
+                            // Update grok panel with current file info
+                            if let Some(state) = self.tab_manager.get_active_state() {
+                                self.grok_panel.current_file_path = Some(state.path.clone());
+                                self.grok_panel.use_file_specific = state.grok_config.is_some();
+                            } else {
+                                self.grok_panel.current_file_path = None;
+                            }
+
+                            // Grok parser panel
+                            match self.grok_panel.show(ui, &mut self.grok_parser) {
+                                GrokPanelAction::PatternChanged => {
+                                    // Pattern changed, reset grok parse progress for all tabs
+                                    for state in self.tab_manager.states.values_mut() {
+                                        state.grok_parse_progress = 0;
+                                        // Clear existing grok fields
+                                        for entry in state.buffer.iter_mut() {
+                                            entry.clear_grok_fields();
+                                        }
+                                    }
+                                    // Save config
+                                    self.grok_panel.save_to_config(&mut self.config.grok);
+                                    self.config.grok.custom_patterns = self.grok_parser.export_custom_patterns();
+                                    if let Err(e) = self.config.save() {
+                                        tracing::error!("Failed to save config: {}", e);
+                                    }
+                                }
+                                GrokPanelAction::ConfigChanged => {
+                                    // Config changed, save
+                                    self.grok_panel.save_to_config(&mut self.config.grok);
+                                    self.config.grok.custom_patterns = self.grok_parser.export_custom_patterns();
+                                    if let Err(e) = self.config.save() {
+                                        tracing::error!("Failed to save config: {}", e);
+                                    }
+                                }
+                                GrokPanelAction::FilePatternChanged { path, config } => {
+                                    // Save per-file grok config
+                                    self.config.set_file_grok_config(path.clone(), config.clone());
+                                    
+                                    // Update the tab state
+                                    if let Some(state) = self.tab_manager.get_state_by_path_mut(&path) {
+                                        state.grok_config = config;
+                                        state.grok_parse_progress = 0;
+                                        // Clear existing grok fields to reparse
+                                        for entry in state.buffer.iter_mut() {
+                                            entry.clear_grok_fields();
+                                        }
+                                    }
+                                    
+                                    if let Err(e) = self.config.save() {
+                                        tracing::error!("Failed to save config: {}", e);
+                                    }
+                                }
+                                GrokPanelAction::RequestSampleLines => {
+                                    // Get sample lines from current tab
+                                    if let Some(state) = self.tab_manager.get_active_state() {
+                                        let sample_lines: Vec<String> = state.buffer
+                                            .iter()
+                                            .take(20)
+                                            .map(|e| e.content.clone())
+                                            .collect();
+                                        self.grok_panel.set_sample_lines(sample_lines);
+                                    }
+                                }
+                                GrokPanelAction::None => {}
+                            }
+                        }
                         ActivityView::Bookmarks => {
                             // Bookmarks view
                             if let Some(state) = self.tab_manager.get_active_state_mut() {
@@ -1682,6 +2103,13 @@ impl eframe::App for LoglineApp {
                             None
                         };
 
+                        // Get grok pattern from this tab's parser
+                        let grok_pattern = if self.display_config.show_grok_fields {
+                            state.grok_parser.as_ref().and_then(|p| p.active_pattern())
+                        } else {
+                            None
+                        };
+
                         ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect).id_salt("left_pane"), |ui| {
                             let (_, context_action) = state.main_view.show(
                                 ui,
@@ -1689,6 +2117,7 @@ impl eframe::App for LoglineApp {
                                 filtered,
                                 &state.filter.search,
                                 &self.display_config,
+                                grok_pattern.as_ref(),
                             );
                             left_context_action = context_action;
                         });
@@ -1705,6 +2134,13 @@ impl eframe::App for LoglineApp {
                                 None
                             };
 
+                            // Get grok pattern from this tab's parser
+                            let grok_pattern = if self.display_config.show_grok_fields {
+                                state.grok_parser.as_ref().and_then(|p| p.active_pattern())
+                            } else {
+                                None
+                            };
+
                             ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect).id_salt("right_pane"), |ui| {
                                 let (_, context_action) = state.main_view.show(
                                     ui,
@@ -1712,6 +2148,7 @@ impl eframe::App for LoglineApp {
                                     filtered,
                                     &state.filter.search,
                                     &self.display_config,
+                                    grok_pattern.as_ref(),
                                 );
                                 right_context_action = context_action;
                             });
@@ -1735,12 +2172,20 @@ impl eframe::App for LoglineApp {
                         None
                     };
 
+                    // Get grok pattern from this tab's parser
+                    let grok_pattern = if self.display_config.show_grok_fields {
+                        state.grok_parser.as_ref().and_then(|p| p.active_pattern())
+                    } else {
+                        None
+                    };
+
                     let (_, context_action) = state.main_view.show(
                         ui,
                         &state.buffer,
                         filtered,
                         &state.filter.search,
                         &self.display_config,
+                        grok_pattern.as_ref(),
                     );
 
                     // Handle context menu actions

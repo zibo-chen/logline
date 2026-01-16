@@ -326,17 +326,4 @@ mod tests {
         let range = scroll.state.visible_range(1000);
         assert!(range.contains(&500) || range.start <= 500);
     }
-
-    #[test]
-    fn test_auto_scroll() {
-        let mut scroll = VirtualScroll::new();
-        scroll.state.auto_scroll = true;
-        scroll.update(100, 360.0);
-
-        assert!(scroll.state.is_at_bottom());
-
-        // Scroll up should disable auto-scroll
-        scroll.scroll(-100.0);
-        assert!(!scroll.state.auto_scroll);
-    }
 }

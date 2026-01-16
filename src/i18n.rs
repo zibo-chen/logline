@@ -838,6 +838,13 @@ impl Translations {
         }
     }
 
+    pub fn show_grok_fields() -> &'static str {
+        match current_language() {
+            Language::English => "Show Grok formatted output",
+            Language::Chinese => "显示 Grok 格式化输出",
+        }
+    }
+
     // ============ Global Search ============
     pub fn global_search_placeholder() -> &'static str {
         match current_language() {
@@ -1194,6 +1201,311 @@ impl Translations {
         match current_language() {
             Language::English => "Space - Toggle auto-scroll",
             Language::Chinese => "Space - 切换自动滚动",
+        }
+    }
+
+    // ============ Grok Parser ============
+    pub fn grok_parser() -> &'static str {
+        match current_language() {
+            Language::English => "Grok Parser",
+            Language::Chinese => "Grok 解析器",
+        }
+    }
+
+    pub fn grok_builtin_patterns() -> &'static str {
+        match current_language() {
+            Language::English => "Built-in Patterns",
+            Language::Chinese => "内置模板",
+        }
+    }
+
+    pub fn grok_custom_patterns() -> &'static str {
+        match current_language() {
+            Language::English => "Custom Patterns",
+            Language::Chinese => "自定义模板",
+        }
+    }
+
+    pub fn grok_pattern_name() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern Name",
+            Language::Chinese => "模板名称",
+        }
+    }
+
+    pub fn grok_pattern_string() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern",
+            Language::Chinese => "模板表达式",
+        }
+    }
+
+    pub fn grok_pattern_description() -> &'static str {
+        match current_language() {
+            Language::English => "Description",
+            Language::Chinese => "描述",
+        }
+    }
+
+    pub fn grok_pattern_example() -> &'static str {
+        match current_language() {
+            Language::English => "Example",
+            Language::Chinese => "示例",
+        }
+    }
+
+    pub fn grok_test_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Test Pattern",
+            Language::Chinese => "测试模板",
+        }
+    }
+
+    pub fn grok_test_input() -> &'static str {
+        match current_language() {
+            Language::English => "Test Input",
+            Language::Chinese => "测试输入",
+        }
+    }
+
+    pub fn grok_test_result() -> &'static str {
+        match current_language() {
+            Language::English => "Test Result",
+            Language::Chinese => "测试结果",
+        }
+    }
+
+    pub fn grok_add_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Add Pattern",
+            Language::Chinese => "添加模板",
+        }
+    }
+
+    pub fn grok_edit_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Edit Pattern",
+            Language::Chinese => "编辑模板",
+        }
+    }
+
+    pub fn grok_delete_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Delete Pattern",
+            Language::Chinese => "删除模板",
+        }
+    }
+
+    pub fn grok_save_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Save Pattern",
+            Language::Chinese => "保存模板",
+        }
+    }
+
+    pub fn grok_cancel() -> &'static str {
+        match current_language() {
+            Language::English => "Cancel",
+            Language::Chinese => "取消",
+        }
+    }
+
+    pub fn grok_no_pattern_selected() -> &'static str {
+        match current_language() {
+            Language::English => "No pattern selected",
+            Language::Chinese => "未选择模板",
+        }
+    }
+
+    pub fn grok_parsed_fields() -> &'static str {
+        match current_language() {
+            Language::English => "Parsed Fields",
+            Language::Chinese => "解析字段",
+        }
+    }
+
+    pub fn grok_no_match() -> &'static str {
+        match current_language() {
+            Language::English => "No match",
+            Language::Chinese => "无匹配",
+        }
+    }
+
+    pub fn grok_pattern_error() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern Error",
+            Language::Chinese => "模板错误",
+        }
+    }
+
+    pub fn grok_display_template() -> &'static str {
+        match current_language() {
+            Language::English => "Display Template",
+            Language::Chinese => "展示模板",
+        }
+    }
+
+    pub fn grok_display_template_hint() -> &'static str {
+        match current_language() {
+            Language::English => {
+                "Use %{field} to reference parsed fields. Supports colors: %{field:color=red} or %{field:color=#FF0000}. Date formatting: %{timestamp:format=%Y-%m-%d}. Leave empty to show original."
+            }
+            Language::Chinese => "使用 %{字段名} 引用解析的字段。支持颜色：%{字段名:color=red} 或 %{字段名:color=#FF0000}。日期格式化：%{timestamp:format=%Y-%m-%d}。留空则显示原始内容。",
+        }
+    }
+
+    pub fn grok_formatted_preview() -> &'static str {
+        match current_language() {
+            Language::English => "Formatted Preview",
+            Language::Chinese => "格式化预览",
+        }
+    }
+
+    pub fn grok_active_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Active Pattern",
+            Language::Chinese => "当前模板",
+        }
+    }
+
+    pub fn grok_no_custom_patterns() -> &'static str {
+        match current_language() {
+            Language::English => "No custom patterns defined",
+            Language::Chinese => "暂无自定义模板",
+        }
+    }
+
+    pub fn grok_pattern_definitions() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern Definitions",
+            Language::Chinese => "模板定义",
+        }
+    }
+
+    pub fn grok_none() -> &'static str {
+        match current_language() {
+            Language::English => "None",
+            Language::Chinese => "无",
+        }
+    }
+
+    pub fn grok_pattern_cleared() -> &'static str {
+        match current_language() {
+            Language::English => "Grok pattern cleared",
+            Language::Chinese => "Grok 模板已清除",
+        }
+    }
+
+    pub fn grok_panel_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Configure patterns here. Select pattern in status bar.",
+            Language::Chinese => "在此配置模板，通过状态栏选择使用的模板。",
+        }
+    }
+
+    pub fn grok_add_definition() -> &'static str {
+        match current_language() {
+            Language::English => "Add Definition",
+            Language::Chinese => "添加定义",
+        }
+    }
+
+    pub fn grok_definition_name() -> &'static str {
+        match current_language() {
+            Language::English => "Definition Name",
+            Language::Chinese => "定义名称",
+        }
+    }
+
+    pub fn grok_definition_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Definition Pattern",
+            Language::Chinese => "定义模板",
+        }
+    }
+
+    // ============ AI Assist ============
+    pub fn grok_ai_assist() -> &'static str {
+        match current_language() {
+            Language::English => "AI Assist",
+            Language::Chinese => "AI辅助",
+        }
+    }
+
+    pub fn grok_ai_generate_prompt() -> &'static str {
+        match current_language() {
+            Language::English => "Generate Prompt",
+            Language::Chinese => "生成提示词",
+        }
+    }
+
+    pub fn grok_ai_prompt_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Click to generate a prompt for LLM. Copy the prompt, send it to your favorite LLM (ChatGPT, Claude, etc.), then paste the JSON response below.",
+            Language::Chinese => "点击生成提示词。将提示词复制给您喜欢的LLM（如ChatGPT、Claude等），然后将返回的JSON粘贴到下方。",
+        }
+    }
+
+    pub fn grok_ai_copy_prompt() -> &'static str {
+        match current_language() {
+            Language::English => "Copy Prompt",
+            Language::Chinese => "复制提示词",
+        }
+    }
+
+    pub fn grok_ai_prompt_copied() -> &'static str {
+        match current_language() {
+            Language::English => "Prompt copied to clipboard!",
+            Language::Chinese => "提示词已复制到剪贴板！",
+        }
+    }
+
+    pub fn grok_ai_paste_json() -> &'static str {
+        match current_language() {
+            Language::English => "Paste JSON Response",
+            Language::Chinese => "粘贴JSON响应",
+        }
+    }
+
+    pub fn grok_ai_json_placeholder() -> &'static str {
+        match current_language() {
+            Language::English => "Paste the JSON response from LLM here...",
+            Language::Chinese => "在此粘贴LLM返回的JSON响应...",
+        }
+    }
+
+    pub fn grok_ai_apply_pattern() -> &'static str {
+        match current_language() {
+            Language::English => "Apply Pattern",
+            Language::Chinese => "应用模板",
+        }
+    }
+
+    pub fn grok_ai_pattern_applied() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern applied successfully!",
+            Language::Chinese => "模板应用成功！",
+        }
+    }
+
+    pub fn grok_ai_invalid_json() -> &'static str {
+        match current_language() {
+            Language::English => "Invalid JSON format. Please check the response from LLM.",
+            Language::Chinese => "无效的JSON格式。请检查LLM的响应。",
+        }
+    }
+
+    pub fn grok_ai_no_file_open() -> &'static str {
+        match current_language() {
+            Language::English => "Please open a log file first",
+            Language::Chinese => "请先打开一个日志文件",
+        }
+    }
+
+    pub fn grok_ai_save_as_custom() -> &'static str {
+        match current_language() {
+            Language::English => "Save as Custom Pattern",
+            Language::Chinese => "保存为自定义模板",
         }
     }
 

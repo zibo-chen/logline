@@ -128,6 +128,16 @@ impl SettingsPanel {
                 action = SettingsAction::DisplayConfigChanged;
             }
 
+            if ui
+                .checkbox(
+                    &mut self.display_config.show_grok_fields,
+                    t::show_grok_fields(),
+                )
+                .changed()
+            {
+                action = SettingsAction::DisplayConfigChanged;
+            }
+
             ui.add_space(16.0);
             ui.separator();
             ui.add_space(8.0);

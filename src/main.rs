@@ -9,6 +9,7 @@ mod app;
 mod bookmarks;
 mod config;
 mod file_watcher;
+mod grok_parser;
 mod highlighter;
 mod i18n;
 mod log_buffer;

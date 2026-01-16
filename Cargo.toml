@@ -27,6 +27,7 @@ toml = "0.8"
 
 # Regex for parsing and searching
 regex = "1.10"
+grok = { version = "2.3", default-features = false, features = ["pcre2"] }
 
 # Encoding detection
 encoding_rs = "0.8"

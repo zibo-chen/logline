@@ -8,6 +8,7 @@ pub mod explorer_panel;
 pub mod file_picker_dialog;
 pub mod filter_panel;
 pub mod global_search_panel;
+pub mod grok_panel;
 pub mod main_view;
 pub mod search_bar;
 pub mod settings_panel;

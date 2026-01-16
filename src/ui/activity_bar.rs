@@ -11,6 +11,7 @@ pub enum ActivityView {
     Explorer,
     Search,
     Filters,
+    Grok,
     Bookmarks,
     Settings,
 }
@@ -87,6 +88,19 @@ impl ActivityBar {
                 } else {
                     self.active_view = ActivityView::Filters;
                     action = ActivityBarAction::SwitchView(ActivityView::Filters);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Grok parser button
+            let is_active = self.sidebar_visible && self.active_view == ActivityView::Grok;
+            if self.icon_button(ui, "🔧", t::grok_parser(), is_active) {
+                if self.sidebar_visible && self.active_view == ActivityView::Grok {
+                    action = ActivityBarAction::TogglePanel;
+                } else {
+                    self.active_view = ActivityView::Grok;
+                    action = ActivityBarAction::SwitchView(ActivityView::Grok);
                 }
             }
 

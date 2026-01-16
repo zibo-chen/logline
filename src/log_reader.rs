@@ -170,13 +170,6 @@ impl LogReader {
         line
     }
 
-    /// Read the entire file from the beginning
-    pub fn read_all(&mut self) -> Result<Vec<LogEntry>> {
-        self.offset = 0;
-        self.line_count = 0;
-        self.read_new_lines()
-    }
-
     /// Seek to a specific byte offset
     #[allow(dead_code)]
     pub fn seek(&mut self, offset: u64) {
@@ -261,6 +254,226 @@ impl LogReader {
 
         Ok(entries)
     }
+
+    /// Read the last N lines from the file (tail mode)
+    /// Returns (entries, start_byte_offset, total_lines_in_file)
+    /// This is optimized for large files - it reads from the end backwards
+    pub fn read_tail(&mut self, max_lines: usize) -> Result<(Vec<LogEntry>, u64, usize)> {
+        let file = File::open(&self.path).context("Failed to open log file")?;
+        let metadata = file.metadata()?;
+        let file_size = metadata.len();
+
+        if file_size == 0 {
+            return Ok((Vec::new(), 0, 0));
+        }
+
+        self.last_file_size = file_size;
+
+        // Strategy: Read from the end in chunks to find line boundaries
+        // Start with a reasonable chunk size (1MB) and expand if needed
+        const CHUNK_SIZE: u64 = 1024 * 1024; // 1MB chunks
+
+        let mut all_lines: Vec<(u64, Vec<u8>)> = Vec::new(); // (byte_offset, line_bytes)
+        let mut search_start: u64 = file_size;
+        let mut found_enough = false;
+
+        let mut reader = BufReader::with_capacity(self.config.buffer_size, file);
+
+        while !found_enough && search_start > 0 {
+            // Calculate chunk boundaries
+            let chunk_start = search_start.saturating_sub(CHUNK_SIZE);
+            let chunk_end = search_start;
+
+            // Seek to chunk start
+            reader.seek(SeekFrom::Start(chunk_start))?;
+
+            // Read the chunk
+            let chunk_len = (chunk_end - chunk_start) as usize;
+            let mut chunk = vec![0u8; chunk_len];
+            reader.read_exact(&mut chunk)?;
+
+            // Parse lines from this chunk (backwards)
+            let mut lines_in_chunk: Vec<(u64, Vec<u8>)> = Vec::new();
+            let mut line_end = chunk.len();
+
+            for (i, &byte) in chunk.iter().enumerate().rev() {
+                if byte == b'\n' || i == 0 {
+                    let line_start = if byte == b'\n' { i + 1 } else { i };
+                    if line_start < line_end {
+                        let line_bytes = chunk[line_start..line_end].to_vec();
+                        let byte_offset = chunk_start + line_start as u64;
+                        lines_in_chunk.push((byte_offset, line_bytes));
+                    }
+                    line_end = i;
+                }
+            }
+
+            // lines_in_chunk is in reverse order (last line first), which is what we want
+            all_lines.extend(lines_in_chunk);
+
+            if all_lines.len() >= max_lines {
+                found_enough = true;
+            }
+
+            search_start = chunk_start;
+        }
+
+        // Now we need to count total lines and also get the correct line numbers
+        // We need to scan from the beginning to count lines up to our start point
+        let start_offset = if all_lines.len() > max_lines {
+            all_lines.truncate(max_lines);
+            all_lines.last().map(|(off, _)| *off).unwrap_or(0)
+        } else {
+            all_lines.last().map(|(off, _)| *off).unwrap_or(0)
+        };
+
+        // Count total lines by scanning from beginning
+        let file = File::open(&self.path)?;
+        let mut count_reader = BufReader::with_capacity(self.config.buffer_size, file);
+        let mut total_lines = 0;
+        let mut lines_before_start = 0;
+        let mut current_offset: u64 = 0;
+        let mut line_buffer = Vec::new();
+
+        loop {
+            line_buffer.clear();
+            let bytes_read = count_reader.read_until(b'\n', &mut line_buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_lines += 1;
+            if current_offset < start_offset {
+                lines_before_start += 1;
+            }
+            current_offset += bytes_read as u64;
+        }
+
+        // Reverse all_lines to get chronological order and create entries
+        all_lines.reverse();
+        let entries: Vec<LogEntry> = all_lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, (byte_offset, line_bytes))| {
+                let line_number = lines_before_start + i + 1;
+                let content = self.decode_line(&line_bytes);
+                // Truncate if too long
+                let content = if content.len() > self.config.max_line_length {
+                    format!(
+                        "{}... [truncated, {} bytes total]",
+                        &content[..self.config.max_line_length],
+                        content.len()
+                    )
+                } else {
+                    content
+                };
+                LogEntry::new(line_number, content, byte_offset)
+            })
+            .collect();
+
+        // Update reader state to be at the end of file for incremental reads
+        self.offset = file_size;
+        self.line_count = total_lines;
+
+        Ok((entries, start_offset, total_lines))
+    }
+
+    /// Read a chunk of lines before the given byte offset
+    /// Used for lazy loading when user scrolls up
+    /// Returns (entries, new_start_offset)
+    pub fn read_previous_chunk(
+        &mut self,
+        before_offset: u64,
+        max_lines: usize,
+    ) -> Result<(Vec<LogEntry>, u64)> {
+        if before_offset == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let file = File::open(&self.path).context("Failed to open log file")?;
+        let mut reader = BufReader::with_capacity(self.config.buffer_size, file);
+
+        // Strategy: Read backwards from before_offset
+        const CHUNK_SIZE: u64 = 512 * 1024; // 512KB chunks
+
+        let mut all_lines: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut search_start = before_offset;
+
+        while all_lines.len() < max_lines && search_start > 0 {
+            let chunk_start = search_start.saturating_sub(CHUNK_SIZE);
+            let chunk_end = search_start;
+
+            reader.seek(SeekFrom::Start(chunk_start))?;
+
+            let chunk_len = (chunk_end - chunk_start) as usize;
+            let mut chunk = vec![0u8; chunk_len];
+            reader.read_exact(&mut chunk)?;
+
+            // Parse lines from this chunk (backwards)
+            let mut lines_in_chunk: Vec<(u64, Vec<u8>)> = Vec::new();
+            let mut line_end = chunk.len();
+
+            for (i, &byte) in chunk.iter().enumerate().rev() {
+                if byte == b'\n' || i == 0 {
+                    let line_start = if byte == b'\n' { i + 1 } else { i };
+                    if line_start < line_end {
+                        let line_bytes = chunk[line_start..line_end].to_vec();
+                        let byte_offset = chunk_start + line_start as u64;
+                        lines_in_chunk.push((byte_offset, line_bytes));
+                    }
+                    line_end = i;
+                }
+            }
+
+            all_lines.extend(lines_in_chunk);
+            search_start = chunk_start;
+        }
+
+        if all_lines.len() > max_lines {
+            all_lines.truncate(max_lines);
+        }
+
+        let new_start_offset = all_lines.last().map(|(off, _)| *off).unwrap_or(0);
+
+        // Count lines before new_start_offset
+        let file = File::open(&self.path)?;
+        let mut count_reader = BufReader::with_capacity(self.config.buffer_size, file);
+        let mut lines_before = 0;
+        let mut current_offset: u64 = 0;
+        let mut line_buffer = Vec::new();
+
+        while current_offset < new_start_offset {
+            line_buffer.clear();
+            let bytes_read = count_reader.read_until(b'\n', &mut line_buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            lines_before += 1;
+            current_offset += bytes_read as u64;
+        }
+
+        // Reverse to get chronological order
+        all_lines.reverse();
+        let entries: Vec<LogEntry> = all_lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, (byte_offset, line_bytes))| {
+                let line_number = lines_before + i + 1;
+                let content = self.decode_line(&line_bytes);
+                let content = if content.len() > self.config.max_line_length {
+                    format!(
+                        "{}... [truncated, {} bytes total]",
+                        &content[..self.config.max_line_length],
+                        content.len()
+                    )
+                } else {
+                    content
+                };
+                LogEntry::new(line_number, content, byte_offset)
+            })
+            .collect();
+
+        Ok((entries, new_start_offset))
+    }
 }
 
 /// Async log reader for background reading
@@ -335,24 +548,6 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_read_all_lines() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "Line 1").unwrap();
-        writeln!(file, "Line 2").unwrap();
-        writeln!(file, "Line 3").unwrap();
-        file.flush().unwrap();
-
-        let mut reader = LogReader::new(file.path()).unwrap();
-        let entries = reader.read_all().unwrap();
-
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].content, "Line 1");
-        assert_eq!(entries[0].line_number, 1);
-        assert_eq!(entries[2].content, "Line 3");
-        assert_eq!(entries[2].line_number, 3);
-    }
 
     #[test]
     fn test_incremental_read() {

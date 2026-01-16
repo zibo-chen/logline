@@ -73,6 +73,21 @@ pub struct LogEntry {
     /// Byte offset in file where this line starts
     #[allow(dead_code)]
     pub byte_offset: u64,
+    /// Grok parsed fields (field name -> value)
+    pub grok_fields: Option<std::collections::HashMap<String, String>>,
+    /// Formatted display text (from grok template)
+    pub formatted_content: Option<String>,
+    /// Formatted display segments with style info
+    pub formatted_segments: Option<Vec<FormattedSegment>>,
+}
+
+/// A segment of formatted text with styling information
+#[derive(Debug, Clone)]
+pub struct FormattedSegment {
+    /// The text content
+    pub text: String,
+    /// Optional color (RGB)
+    pub color: Option<(u8, u8, u8)>,
 }
 
 impl LogEntry {
@@ -88,7 +103,27 @@ impl LogEntry {
             timestamp,
             bookmarked: false,
             byte_offset,
+            grok_fields: None,
+            formatted_content: None,
+            formatted_segments: None,
         }
+    }
+
+    /// Set grok parsed fields and optionally formatted content
+    pub fn set_grok_fields(&mut self, fields: std::collections::HashMap<String, String>) {
+        self.grok_fields = Some(fields);
+    }
+
+    /// Clear grok parsed fields and formatted content
+    pub fn clear_grok_fields(&mut self) {
+        self.grok_fields = None;
+        self.formatted_content = None;
+        self.formatted_segments = None;
+    }
+
+    /// Get the display content (formatted if available, otherwise original)
+    pub fn display_content(&self) -> &str {
+        self.formatted_content.as_deref().unwrap_or(&self.content)
     }
 
     /// Detect log level from content

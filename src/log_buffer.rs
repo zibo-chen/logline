@@ -11,6 +11,8 @@ pub struct LogBufferConfig {
     pub max_lines: usize,
     /// Whether to automatically trim old entries when limit is reached
     pub auto_trim: bool,
+    /// Number of lines to load when scrolling up (chunk size)
+    pub chunk_size: usize,
 }
 
 impl Default for LogBufferConfig {
@@ -18,8 +20,26 @@ impl Default for LogBufferConfig {
         Self {
             max_lines: 100_000,
             auto_trim: true,
+            chunk_size: 5_000, // Load 5k lines per chunk when scrolling up
         }
     }
+}
+
+/// Lazy loading state for large files
+#[derive(Debug, Clone, Default)]
+pub struct LazyLoadState {
+    /// Whether lazy loading is enabled (file has more lines than initial_lines)
+    pub enabled: bool,
+    /// Byte offset where our loaded data starts
+    pub loaded_start_offset: u64,
+    /// First line number in the buffer (1-indexed)
+    pub first_loaded_line: usize,
+    /// Whether we've loaded all data from the beginning
+    pub fully_loaded: bool,
+    /// Whether a load operation is in progress
+    pub loading_in_progress: bool,
+    /// Request to load more data (set by UI, processed by background thread)
+    pub load_more_requested: bool,
 }
 
 /// Buffer for storing log entries with efficient operations
@@ -36,6 +56,8 @@ pub struct LogBuffer {
     first_line_number: usize,
     /// Whether we're currently using the shadow buffer
     using_shadow: bool,
+    /// Lazy loading state
+    pub lazy_load: LazyLoadState,
 }
 
 impl LogBuffer {
@@ -53,6 +75,7 @@ impl LogBuffer {
             total_lines_added: 0,
             first_line_number: 1,
             using_shadow: false,
+            lazy_load: LazyLoadState::default(),
         }
     }
 
@@ -94,6 +117,88 @@ impl LogBuffer {
         self.shadow_entries = std::mem::take(&mut self.entries);
         self.using_shadow = true;
         self.first_line_number = self.total_lines_added + 1;
+        // Reset lazy load state
+        self.lazy_load = LazyLoadState::default();
+    }
+
+    /// Prepend entries to the front of the buffer (for lazy loading older entries)
+    /// This is used when the user scrolls up and we need to load earlier log entries
+    pub fn prepend(&mut self, entries: Vec<LogEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+
+        // Update first line number based on the first entry
+        if let Some(first) = entries.first() {
+            self.first_line_number = first.line_number;
+        }
+
+        // Prepend entries (insert at front)
+        for entry in entries.into_iter().rev() {
+            self.entries.push_front(entry);
+        }
+
+        // Trim from the back if we exceed max_lines (keep older entries, drop newest)
+        // Actually, we want to keep newest, so trim from front after prepend
+        // But for lazy loading, we want to keep the view stable
+        // So we trim from the back (newest) when prepending
+        while self.config.auto_trim && self.entries.len() > self.config.max_lines {
+            self.entries.pop_back();
+        }
+    }
+
+    /// Initialize buffer with tail entries (for lazy loading)
+    /// Sets up lazy load state based on initial load results
+    pub fn init_with_tail(
+        &mut self,
+        entries: Vec<LogEntry>,
+        start_offset: u64,
+        total_lines: usize,
+    ) {
+        self.entries.clear();
+        self.shadow_entries.clear();
+        self.using_shadow = false;
+
+        if let Some(first) = entries.first() {
+            self.first_line_number = first.line_number;
+        }
+
+        let loaded_count = entries.len();
+        self.total_lines_added = total_lines;
+
+        for entry in entries {
+            self.entries.push_back(entry);
+        }
+
+        // Set up lazy load state
+        self.lazy_load = LazyLoadState {
+            enabled: loaded_count < total_lines,
+            loaded_start_offset: start_offset,
+            first_loaded_line: self.first_line_number,
+            fully_loaded: loaded_count >= total_lines,
+            loading_in_progress: false,
+            load_more_requested: false,
+        };
+    }
+
+    /// Check if we need to load more data (user is near the top)
+    /// Returns true if load_more_requested should be set
+    pub fn should_load_more(&self, visible_start_row: usize) -> bool {
+        if !self.lazy_load.enabled
+            || self.lazy_load.fully_loaded
+            || self.lazy_load.loading_in_progress
+        {
+            return false;
+        }
+
+        // Trigger load when user is within first 10% of loaded data or within 100 rows of top
+        let threshold = (self.entries.len() / 10).max(100).min(500);
+        visible_start_row < threshold
+    }
+
+    /// Get the chunk size for loading
+    pub fn chunk_size(&self) -> usize {
+        self.config.chunk_size
     }
 
     /// Get number of entries currently in buffer
@@ -119,6 +224,11 @@ impl LogBuffer {
     /// Get entry by index (0-indexed into current buffer)
     pub fn get(&self, index: usize) -> Option<&LogEntry> {
         self.entries.get(index)
+    }
+
+    /// Get mutable entry by index (0-indexed into current buffer)
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut LogEntry> {
+        self.entries.get_mut(index)
     }
 
     /// Get entry by line number (1-indexed from file start)
@@ -160,6 +270,15 @@ impl LogBuffer {
             Box::new(self.shadow_entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
         } else {
             Box::new(self.entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
+        }
+    }
+
+    /// Iterate over all entries mutably
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut LogEntry> {
+        if self.using_shadow && self.entries.is_empty() {
+            Box::new(self.shadow_entries.iter_mut()) as Box<dyn Iterator<Item = &mut LogEntry>>
+        } else {
+            Box::new(self.entries.iter_mut()) as Box<dyn Iterator<Item = &mut LogEntry>>
         }
     }
 
@@ -416,6 +535,7 @@ mod tests {
         let config = LogBufferConfig {
             max_lines: 3,
             auto_trim: true,
+            chunk_size: 5_000,
         };
         let mut buffer = LogBuffer::with_config(config);
 

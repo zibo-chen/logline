@@ -5,7 +5,9 @@
 //! Also supports split view for viewing two logs side by side.
 
 use crate::bookmarks::BookmarksStore;
+use crate::config::FileGrokConfig;
 use crate::file_watcher::FileWatcher;
+use crate::grok_parser::GrokParser;
 use crate::log_buffer::{LogBuffer, LogBufferConfig};
 use crate::log_entry::LogEntry;
 use crate::log_reader::{LogReader, LogReaderConfig};
@@ -24,8 +26,10 @@ use std::time::Duration;
 /// Messages from background reader thread
 #[derive(Debug)]
 pub enum ReaderMessage {
-    /// New log entries
+    /// New log entries (appended to end)
     NewEntries(Vec<LogEntry>),
+    /// Previous chunk loaded (prepended to beginning, for lazy loading)
+    PreviousChunk(Vec<LogEntry>, u64), // entries, new_start_offset
     /// File was reset (rotation)
     FileReset,
     /// Error occurred
@@ -37,6 +41,8 @@ pub enum ReaderMessage {
 pub enum ReaderCommand {
     /// Stop reading
     Stop,
+    /// Load previous chunk (for lazy loading when scrolling up)
+    LoadPreviousChunk(u64, usize), // before_offset, max_lines
 }
 
 /// State for a single tab
@@ -65,6 +71,12 @@ pub struct TabState {
     pub main_view: MainView,
     /// Pending entries count (for batching)
     pub pending_entries: usize,
+    /// Index of the next entry to check for grok parsing
+    pub grok_parse_progress: usize,
+    /// Per-tab grok parser (for file-specific patterns)
+    pub grok_parser: Option<GrokParser>,
+    /// Per-tab grok config
+    pub grok_config: Option<FileGrokConfig>,
 }
 
 impl TabState {
@@ -86,6 +98,9 @@ impl TabState {
             filter_active: false,
             main_view: MainView::with_id(view_id),
             pending_entries: 0,
+            grok_parse_progress: 0,
+            grok_parser: None,
+            grok_config: None,
         }
     }
 
@@ -105,9 +120,12 @@ impl TabState {
         };
         let mut reader = LogReader::with_config(&self.path, config)?;
 
-        // Read initial content
-        let entries = reader.read_all()?;
-        self.buffer.extend(entries);
+        // Read initial content using tail mode for better performance with large files
+        let initial_lines = self.buffer.chunk_size() * 2; // Load ~10k lines initially
+        let (entries, start_offset, total_lines) = reader.read_tail(initial_lines)?;
+        
+        // Initialize buffer with lazy load state
+        self.buffer.init_with_tail(entries, start_offset, total_lines);
 
         // Restore bookmarks for this file
         if let Some(file_bookmarks) = bookmarks_store.get_bookmarks(&self.path) {
@@ -184,8 +202,25 @@ impl TabState {
         reader.seek_with_line_count(initial_offset, initial_line_count);
 
         loop {
-            if let Ok(ReaderCommand::Stop) = cmd_rx.try_recv() {
-                break;
+            // Check for commands first
+            match cmd_rx.try_recv() {
+                Ok(ReaderCommand::Stop) => break,
+                Ok(ReaderCommand::LoadPreviousChunk(before_offset, max_lines)) => {
+                    // Load previous chunk for lazy loading
+                    match reader.read_previous_chunk(before_offset, max_lines) {
+                        Ok((entries, new_start_offset)) if !entries.is_empty() => {
+                            let _ = msg_tx.send(ReaderMessage::PreviousChunk(entries, new_start_offset));
+                        }
+                        Ok(_) => {
+                            // No more data to load
+                            let _ = msg_tx.send(ReaderMessage::PreviousChunk(Vec::new(), 0));
+                        }
+                        Err(e) => {
+                            let _ = msg_tx.send(ReaderMessage::Error(e.to_string()));
+                        }
+                    }
+                }
+                Err(_) => {} // No command
             }
 
             match reader.has_new_content() {
@@ -231,6 +266,7 @@ impl TabState {
         };
 
         let mut new_entries = Vec::new();
+        let mut prepend_entries: Option<(Vec<LogEntry>, u64)> = None;
         let mut had_changes = false;
         let mut had_reset = false;
 
@@ -240,23 +276,80 @@ impl TabState {
                     new_entries.extend(entries);
                     had_changes = true;
                 }
+                ReaderMessage::PreviousChunk(entries, new_start_offset) => {
+                    // Handle lazy-loaded previous chunk
+                    self.buffer.lazy_load.loading_in_progress = false;
+                    if entries.is_empty() {
+                        // No more data, mark as fully loaded
+                        self.buffer.lazy_load.fully_loaded = true;
+                    } else {
+                        prepend_entries = Some((entries, new_start_offset));
+                        had_changes = true;
+                    }
+                }
                 ReaderMessage::FileReset => {
                     had_reset = true;
                     self.buffer.clear();
                 }
                 ReaderMessage::Error(e) => {
                     tracing::error!("Reader error for {:?}: {}", self.path, e);
+                    self.buffer.lazy_load.loading_in_progress = false;
                 }
             }
         }
 
+        // Handle prepended entries first (from lazy loading)
+        if let Some((entries, new_start_offset)) = prepend_entries {
+            let prepend_count = entries.len();
+            self.buffer.prepend(entries);
+            self.buffer.lazy_load.loaded_start_offset = new_start_offset;
+            self.buffer.lazy_load.first_loaded_line = self.buffer.first_line_number();
+            self.buffer.lazy_load.load_more_requested = false;
+            
+            // Adjust grok_parse_progress since we prepended items
+            // The existing parsed items are now at higher indices
+            self.grok_parse_progress += prepend_count;
+            
+            self.filter.mark_dirty();
+            self.pending_entries += 1;
+        }
+
         if !new_entries.is_empty() {
+            let old_first_line = self.buffer.first_line_number();
             self.buffer.extend(new_entries);
+            let new_first_line = self.buffer.first_line_number();
+
+            // Adjust grok_parse_progress if items were trimmed from the front
+            if new_first_line > old_first_line {
+                let dropped = new_first_line - old_first_line;
+                self.grok_parse_progress = self.grok_parse_progress.saturating_sub(dropped);
+            }
+
             self.filter.mark_dirty();
             self.pending_entries += 1;
         }
 
         had_changes || had_reset
+    }
+
+    /// Request to load more data (for lazy loading when scrolling up)
+    pub fn request_load_more(&mut self) {
+        if !self.buffer.lazy_load.enabled 
+            || self.buffer.lazy_load.fully_loaded 
+            || self.buffer.lazy_load.loading_in_progress 
+        {
+            return;
+        }
+        
+        if let Some(tx) = &self.reader_tx {
+            let before_offset = self.buffer.lazy_load.loaded_start_offset;
+            let chunk_size = self.buffer.chunk_size();
+            
+            if tx.try_send(ReaderCommand::LoadPreviousChunk(before_offset, chunk_size)).is_ok() {
+                self.buffer.lazy_load.loading_in_progress = true;
+                self.buffer.lazy_load.load_more_requested = false;
+            }
+        }
     }
 
     /// Update filtered indices
@@ -272,6 +365,7 @@ impl TabState {
         self.filtered_indices.clear();
         self.filter.mark_dirty();
         self.main_view.clear_selection();
+        self.grok_parse_progress = 0;
     }
 
     /// Close the tab (stop reader, watcher)
@@ -295,6 +389,7 @@ impl TabState {
         self.buffer.clear();
         self.filtered_indices.clear();
         self.main_view.clear_selection();
+        self.grok_parse_progress = 0;
         self.open_file(encoding, bookmarks_store)
     }
 
@@ -492,6 +587,11 @@ impl TabManager {
     /// Get a mutable tab state by ID
     pub fn get_state_mut(&mut self, id: TabId) -> Option<&mut TabState> {
         self.states.get_mut(&id)
+    }
+
+    /// Get a mutable tab state by file path
+    pub fn get_state_by_path_mut(&mut self, path: &PathBuf) -> Option<&mut TabState> {
+        self.states.values_mut().find(|s| &s.path == path)
     }
 
     /// Process reader messages for all tabs

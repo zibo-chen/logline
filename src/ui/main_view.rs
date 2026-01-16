@@ -1,12 +1,14 @@
 //! Main log view component with virtual scrolling
 
 use crate::config::DisplayConfig;
+use crate::grok_parser::CompiledPattern;
 use crate::highlighter::Highlighter;
 use crate::log_buffer::LogBuffer;
-use crate::log_entry::LogEntry;
+use crate::log_entry::{LogEntry, LogLevel};
 use crate::search::SearchEngine;
 use crate::virtual_scroll::VirtualScroll;
 use egui::{self, Color32, Rect, Response, Sense, Ui, UiKind, Vec2};
+use std::sync::Arc;
 
 /// Context menu actions
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +110,9 @@ impl MainView {
     }
 
     /// Render the main view
+    ///
+    /// If `grok_pattern` is provided and `display_config.show_grok_fields` is true,
+    /// the display template will be applied lazily during rendering for visible entries only.
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -115,6 +120,7 @@ impl MainView {
         filtered_indices: Option<&[usize]>,
         search: &SearchEngine,
         display_config: &DisplayConfig,
+        grok_pattern: Option<&Arc<CompiledPattern>>,
     ) -> (Response, Option<ContextMenuAction>) {
         let total_rows = filtered_indices.map(|f| f.len()).unwrap_or(buffer.len());
 
@@ -366,22 +372,141 @@ impl MainView {
                 // Use infinite width for text (no wrapping, allows horizontal scrolling)
                 let text_available_width = f32::INFINITY;
 
-                let layout_job = self.highlighter.highlight_line_with_wrap(
-                    &entry.content,
-                    entry.level,
-                    search_query,
-                    search.config.case_sensitive,
-                    text_available_width,
-                    display_config.letter_spacing,
-                );
+                // Create layout job based on whether we have grok fields and template
+                // Lazy formatting: apply display template during rendering for visible entries only
+                let layout_job = if display_config.show_grok_fields {
+                    // Try to get formatted segments - either from cache or generate on-the-fly
+                    let formatted_segments = if entry.formatted_segments.is_some() {
+                        entry.formatted_segments.as_ref()
+                    } else if entry.grok_fields.is_some() && grok_pattern.is_some() {
+                        // Lazy formatting: generate segments on-the-fly for visible entries
+                        // This is computed per-frame for visible entries only, avoiding upfront batch processing
+                        None // Will be handled below with on-the-fly formatting
+                    } else {
+                        None
+                    };
+
+                    if let Some(segments) = formatted_segments {
+                        // Use cached styled segments
+                        let mut job = egui::text::LayoutJob::default();
+                        for segment in segments {
+                            let color = if let Some((r, g, b)) = segment.color {
+                                egui::Color32::from_rgb(r, g, b)
+                            } else {
+                                // Use default color based on log level
+                                match entry.level {
+                                    Some(LogLevel::Error) | Some(LogLevel::Fatal) => {
+                                        egui::Color32::from_rgb(244, 67, 54)
+                                    }
+                                    Some(LogLevel::Warn) => egui::Color32::from_rgb(255, 152, 0),
+                                    Some(LogLevel::Info) => egui::Color32::from_rgb(33, 150, 243),
+                                    Some(LogLevel::Debug) => egui::Color32::from_rgb(158, 158, 158),
+                                    Some(LogLevel::Trace) => egui::Color32::from_rgb(117, 117, 117),
+                                    None => egui::Color32::from_gray(200),
+                                }
+                            };
+
+                            let font_id = egui::FontId::new(
+                                display_config.font_size,
+                                egui::FontFamily::Monospace,
+                            );
+
+                            job.append(
+                                &segment.text,
+                                display_config.letter_spacing,
+                                egui::text::TextFormat {
+                                    font_id,
+                                    color,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        job
+                    } else if let (Some(fields), Some(pattern)) = (&entry.grok_fields, grok_pattern)
+                    {
+                        // On-the-fly formatting for visible entries without cached segments
+                        if let Some((_, segments)) = pattern.format_with_style(fields) {
+                            let mut job = egui::text::LayoutJob::default();
+                            for segment in &segments {
+                                let color = if let Some((r, g, b)) = segment.color {
+                                    egui::Color32::from_rgb(r, g, b)
+                                } else {
+                                    match entry.level {
+                                        Some(LogLevel::Error) | Some(LogLevel::Fatal) => {
+                                            egui::Color32::from_rgb(244, 67, 54)
+                                        }
+                                        Some(LogLevel::Warn) => {
+                                            egui::Color32::from_rgb(255, 152, 0)
+                                        }
+                                        Some(LogLevel::Info) => {
+                                            egui::Color32::from_rgb(33, 150, 243)
+                                        }
+                                        Some(LogLevel::Debug) => {
+                                            egui::Color32::from_rgb(158, 158, 158)
+                                        }
+                                        Some(LogLevel::Trace) => {
+                                            egui::Color32::from_rgb(117, 117, 117)
+                                        }
+                                        None => egui::Color32::from_gray(200),
+                                    }
+                                };
+
+                                let font_id = egui::FontId::new(
+                                    display_config.font_size,
+                                    egui::FontFamily::Monospace,
+                                );
+
+                                job.append(
+                                    &segment.text,
+                                    display_config.letter_spacing,
+                                    egui::text::TextFormat {
+                                        font_id,
+                                        color,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                            job
+                        } else {
+                            // Fallback to original content if template formatting fails
+                            self.highlighter.highlight_line_with_wrap(
+                                &entry.content,
+                                entry.level,
+                                search_query,
+                                search.config.case_sensitive,
+                                text_available_width,
+                                display_config.letter_spacing,
+                            )
+                        }
+                    } else {
+                        // No grok fields available, use display_content or original content
+                        let display_text = entry.display_content();
+                        self.highlighter.highlight_line_with_wrap(
+                            display_text,
+                            entry.level,
+                            search_query,
+                            search.config.case_sensitive,
+                            text_available_width,
+                            display_config.letter_spacing,
+                        )
+                    }
+                } else {
+                    // show_grok_fields is disabled, use original content
+                    self.highlighter.highlight_line_with_wrap(
+                        &entry.content,
+                        entry.level,
+                        search_query,
+                        search.config.case_sensitive,
+                        text_available_width,
+                        display_config.letter_spacing,
+                    )
+                };
 
                 // Layout the text with the context fonts
                 let galley = ui.painter().layout_job(layout_job);
-                painter.galley(
-                    egui::pos2(text_x + 4.0, row_y + (row_height - galley.size().y) * 0.5),
-                    galley,
-                    Color32::WHITE,
-                );
+                let text_pos =
+                    egui::pos2(text_x + 4.0, row_y + (row_height - galley.size().y) * 0.5);
+                painter.galley(text_pos, galley.clone(), Color32::WHITE);
 
                 // Draw row separator line at the bottom of each row
                 if display_config.show_row_separator {
@@ -482,6 +607,13 @@ impl MainView {
                 self.virtual_scroll.state.auto_scroll = false;
             }
         }
+
+        // Update virtual scroll state for external access (e.g., lazy loading, on-demand parsing)
+        let current_offset = response.state.offset.y;
+        self.virtual_scroll.state.scroll_offset = current_offset;
+        self.virtual_scroll.state.viewport_height = available_size.y;
+        self.virtual_scroll.state.first_visible_row = (current_offset / row_height).floor() as usize;
+        self.virtual_scroll.state.visible_row_count = (available_size.y / row_height).ceil() as usize;
 
         // Context menu
         let mut context_action = None;
@@ -715,6 +847,29 @@ impl MainView {
         } else {
             crate::highlighter::HighlightTheme::light()
         };
+    }
+
+    /// Get the currently visible row range (for on-demand parsing)
+    /// Returns (start_row, end_row) in buffer indices
+    /// The range includes overscan for smoother experience
+    pub fn get_visible_range(&self, total_rows: usize) -> std::ops::Range<usize> {
+        let row_height = self.current_row_height;
+        if row_height <= 0.0 || total_rows == 0 {
+            return 0..0;
+        }
+        
+        let viewport_height = self.virtual_scroll.state.viewport_height;
+        let scroll_offset = self.virtual_scroll.state.scroll_offset;
+        
+        let first_visible = (scroll_offset / row_height).floor() as usize;
+        let visible_count = (viewport_height / row_height).ceil() as usize;
+        
+        // Add generous overscan for parsing
+        let overscan = 50;
+        let start = first_visible.saturating_sub(overscan);
+        let end = (first_visible + visible_count + overscan).min(total_rows);
+        
+        start..end
     }
 }
 
