@@ -6,8 +6,23 @@
 use anyhow::{Context, Result};
 use grok::Grok;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Pre-processor for log lines before Grok pattern matching
+///
+/// This allows extracting the actual log content from structured wrappers
+/// like JSON lines before applying Grok patterns.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreProcessor {
+    /// No pre-processing, apply Grok directly to the raw line
+    #[default]
+    None,
+    /// Parse the line as JSON and extract a specific field's value
+    /// The field name is the string (e.g., "log" or "message")
+    JsonField(String),
+}
 
 /// Built-in grok pattern templates
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -154,6 +169,9 @@ pub struct CustomPattern {
     /// Display template for formatting output (e.g., "%{timestamp} [%{level}] %{message}")
     /// If empty, the original content is shown
     pub display_template: String,
+    /// Pre-processor to apply before Grok matching (e.g., extract "log" field from JSON)
+    #[serde(default)]
+    pub pre_processor: PreProcessor,
 }
 
 /// Result of parsing a log line with grok
@@ -488,12 +506,16 @@ pub struct GrokParser {
     grok: Grok,
     /// Currently active compiled pattern
     active_pattern: Option<Arc<CompiledPattern>>,
+    /// Fallback access-log pattern for mixed logs
+    fallback_access_pattern: Option<Arc<CompiledPattern>>,
     /// Active pattern name for display
     active_pattern_name: Option<String>,
     /// Custom user patterns
     custom_patterns: Vec<CustomPattern>,
     /// Custom pattern definitions (name -> pattern)
     custom_definitions: HashMap<String, String>,
+    /// Pre-processor to apply before Grok matching
+    pre_processor: PreProcessor,
 }
 
 impl Default for GrokParser {
@@ -506,14 +528,32 @@ impl GrokParser {
     /// Create a new grok parser with default patterns
     pub fn new() -> Self {
         let grok = Grok::default();
+        let fallback_access_pattern = Self::compile_builtin(&grok, BuiltinPattern::CombinedLog);
 
         Self {
             grok,
             active_pattern: None,
+            fallback_access_pattern,
             active_pattern_name: None,
             custom_patterns: Vec::new(),
             custom_definitions: HashMap::new(),
+            pre_processor: PreProcessor::None,
         }
+    }
+
+    fn compile_builtin(grok: &Grok, pattern: BuiltinPattern) -> Option<Arc<CompiledPattern>> {
+        let compiled = grok.compile(pattern.pattern(), false).ok()?;
+        let template = pattern.default_template().to_string();
+        let parsed_template = if !template.is_empty() {
+            Some(CompiledPattern::parse_template_str(&template))
+        } else {
+            None
+        };
+        Some(Arc::new(CompiledPattern {
+            pattern: compiled,
+            display_template: Some(template),
+            parsed_template,
+        }))
     }
 
     /// Add a custom pattern definition
@@ -594,8 +634,132 @@ impl GrokParser {
     }
 
     /// Parse a log line with the active pattern
+    /// If a pre-processor is configured, it will be applied first.
     pub fn parse(&self, text: &str) -> Option<ParsedFields> {
-        self.active_pattern.as_ref()?.parse(text)
+        self.parse_with_pattern(text).map(|(fields, _)| fields)
+    }
+
+    /// Parse a log line and return formatted segments if available
+    pub fn parse_with_format(
+        &self,
+        text: &str,
+    ) -> Option<(
+        ParsedFields,
+        Option<(String, Vec<crate::log_entry::FormattedSegment>)>,
+    )> {
+        let (fields, pattern) = self.parse_with_pattern(text)?;
+        let formatted = pattern.format_with_style(&fields.fields);
+        Some((fields, formatted))
+    }
+
+    fn parse_with_pattern(&self, text: &str) -> Option<(ParsedFields, Arc<CompiledPattern>)> {
+        let active_pattern = self.active_pattern.as_ref()?;
+        let text_to_parse = self.apply_pre_processor(text)?;
+
+        if let Some(result) = active_pattern.parse(&text_to_parse) {
+            return Some((result, active_pattern.clone()));
+        }
+
+        // Fallback: if no pre-processor is set, try to auto-extract JSON fields
+        if self.pre_processor == PreProcessor::None {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+                for field in ["log", "message"] {
+                    if let Some(value) = json.get(field) {
+                        let extracted = match value {
+                            serde_json::Value::String(s) => s.trim_end_matches('\n').to_string(),
+                            other => other.to_string(),
+                        };
+                        Self::log_fallback_attempt(field, &extracted);
+                        if let Some(fallback) = active_pattern.parse(&extracted) {
+                            return Some((fallback, active_pattern.clone()));
+                        }
+                        if let Some(result) = self.try_access_fallback(&extracted) {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: try access-log pattern for mixed logs
+        self.try_access_fallback(&text_to_parse)
+    }
+
+    fn try_access_fallback(&self, text: &str) -> Option<(ParsedFields, Arc<CompiledPattern>)> {
+        let Some(pattern) = self.fallback_access_pattern.as_ref() else {
+            return None;
+        };
+        if !Self::looks_like_access_log(text) {
+            return None;
+        }
+        pattern.parse(text).map(|fields| (fields, pattern.clone()))
+    }
+
+    fn looks_like_access_log(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() || !bytes[0].is_ascii_digit() {
+            return false;
+        }
+        text.contains(" - - [") || text.contains("\" ")
+    }
+
+    fn log_fallback_attempt(field: &str, extracted: &str) {
+        // Throttle logs to avoid spamming
+        static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
+        if now > last + 5 {
+            LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(
+                "JSON fallback attempted using field '{}', extracted (first 200 chars): {:?}",
+                field,
+                &extracted.chars().take(200).collect::<String>()
+            );
+        }
+    }
+
+    /// Apply the pre-processor to extract the actual log content
+    fn apply_pre_processor<'a>(&self, text: &'a str) -> Option<Cow<'a, str>> {
+        match &self.pre_processor {
+            PreProcessor::None => Some(Cow::Borrowed(text)),
+            PreProcessor::JsonField(field_name) => {
+                // Try to parse the line as JSON and extract the specified field
+                match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(json) => {
+                        if let Some(value) = json.get(field_name) {
+                            match value {
+                                serde_json::Value::String(s) => {
+                                    // Trim trailing newline that's common in container logs
+                                    Some(Cow::Owned(s.trim_end_matches('\n').to_string()))
+                                }
+                                // For non-string values, convert to string
+                                other => Some(Cow::Owned(other.to_string())),
+                            }
+                        } else {
+                            // Field not found, fallback to original text
+                            Some(Cow::Borrowed(text))
+                        }
+                    }
+                    Err(_) => {
+                        // Not valid JSON, fallback to original text
+                        Some(Cow::Borrowed(text))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Set the pre-processor
+    pub fn set_pre_processor(&mut self, pre_processor: PreProcessor) {
+        self.pre_processor = pre_processor;
+    }
+
+    /// Get the current pre-processor
+    pub fn pre_processor(&self) -> &PreProcessor {
+        &self.pre_processor
     }
 
     /// Check if a pattern is currently active
@@ -614,6 +778,7 @@ impl GrokParser {
     }
 
     /// Test a pattern against example text
+    /// This also applies the current pre-processor if set
     pub fn test_pattern(&self, pattern_str: &str, text: &str) -> Result<ParsedFields> {
         let compiled = self
             .grok
@@ -626,7 +791,12 @@ impl GrokParser {
             parsed_template: None,
         };
 
-        Ok(pattern.parse(text).unwrap_or_default())
+        // Apply pre-processor before testing the pattern
+        let text_to_parse = self
+            .apply_pre_processor(text)
+            .unwrap_or(Cow::Borrowed(text));
+
+        Ok(pattern.parse(&text_to_parse).unwrap_or_default())
     }
 
     /// Add a custom pattern template
@@ -677,4 +847,7 @@ pub struct GrokConfig {
     pub custom_patterns: Vec<CustomPattern>,
     /// Custom pattern definitions (reusable sub-patterns)
     pub custom_definitions: HashMap<String, String>,
+    /// Pre-processor to apply before Grok matching
+    #[serde(default)]
+    pub pre_processor: PreProcessor,
 }

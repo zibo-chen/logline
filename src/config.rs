@@ -167,6 +167,9 @@ pub struct FileGrokConfig {
     pub custom_pattern_name: Option<String>,
     /// Inline custom pattern (from AI assist, not in global custom patterns list)
     pub inline_pattern: Option<InlineGrokPattern>,
+    /// Pre-processor to apply before Grok matching (e.g., extract "log" field from JSON)
+    #[serde(default)]
+    pub pre_processor: crate::grok_parser::PreProcessor,
 }
 
 /// Inline grok pattern (for AI-generated patterns that are file-specific)
@@ -178,6 +181,9 @@ pub struct InlineGrokPattern {
     pub pattern: String,
     /// Display template
     pub display_template: String,
+    /// Pre-processor to apply before Grok matching
+    #[serde(default)]
+    pub pre_processor: crate::grok_parser::PreProcessor,
 }
 
 /// Window configuration

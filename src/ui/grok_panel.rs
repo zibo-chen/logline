@@ -39,6 +39,8 @@ struct PatternEditor {
     example: String,
     /// Display template for formatting output
     display_template: String,
+    /// Pre-processor to apply before Grok matching
+    pre_processor: crate::grok_parser::PreProcessor,
     /// Whether we're editing an existing pattern
     editing_index: Option<usize>,
     /// Whether the editor is open
@@ -52,6 +54,7 @@ impl PatternEditor {
         self.description.clear();
         self.example.clear();
         self.display_template.clear();
+        self.pre_processor = crate::grok_parser::PreProcessor::None;
         self.editing_index = None;
         self.is_open = false;
     }
@@ -62,6 +65,7 @@ impl PatternEditor {
         self.description = pattern.description.clone();
         self.example = pattern.example.clone();
         self.display_template = pattern.display_template.clone();
+        self.pre_processor = pattern.pre_processor.clone();
         self.editing_index = Some(index);
         self.is_open = true;
     }
@@ -127,6 +131,30 @@ pub struct AiGeneratedPattern {
     /// Description (optional)
     #[serde(default)]
     pub description: String,
+    /// Pre-processor for extracting log content from wrappers (e.g., JSON)
+    /// If the log is wrapped in JSON like {"log": "actual log...", ...},
+    /// set this to {"type": "json_field", "field": "log"}
+    #[serde(default)]
+    pub pre_processor: Option<AiPreProcessorConfig>,
+}
+
+/// Pre-processor configuration from AI response
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AiPreProcessorConfig {
+    /// Extract a field from JSON
+    JsonField { field: String },
+}
+
+impl AiPreProcessorConfig {
+    /// Convert to the internal PreProcessor type
+    pub fn to_pre_processor(&self) -> crate::grok_parser::PreProcessor {
+        match self {
+            AiPreProcessorConfig::JsonField { field } => {
+                crate::grok_parser::PreProcessor::JsonField(field.clone())
+            }
+        }
+    }
 }
 
 impl Default for GrokPanel {
@@ -214,13 +242,24 @@ Please analyze these log lines and return a JSON object with the following struc
     "name": "Pattern name describing the log format",
     "pattern": "The Grok pattern string to parse these logs",
     "display_template": "Display template using %{{field:format=...,color=...}} syntax",
-    "description": "Brief description of what this pattern matches"
+    "description": "Brief description of what this pattern matches",
+    "pre_processor": null or {{"type": "json_field", "field": "field_name"}}
 }}
 
 Requirements:
-1. The Grok pattern should extract meaningful fields like timestamp, log level, message, etc.
-2. Use standard Grok patterns like %{{TIMESTAMP_ISO8601}}, %{{LOGLEVEL}}, %{{GREEDYDATA}}, etc.
-3. The display_template should use colors and formatting to make logs visually clear and readable.
+1. **IMPORTANT: Check if logs are wrapped in JSON structure first!**
+   - If logs look like: {{"log": "actual log content...", "stream": "...", ...}}
+   - Then set pre_processor to: {{"type": "json_field", "field": "log"}}
+   - And write the Grok pattern to match the INNER content (e.g., "actual log content...")
+   - Common wrapper fields: "log", "message", "msg", "content"
+   
+2. If logs are NOT wrapped in JSON, set pre_processor to null.
+
+3. The Grok pattern should extract meaningful fields like timestamp, log level, message, etc.
+
+4. Use standard Grok patterns like %{{TIMESTAMP_ISO8601}}, %{{LOGLEVEL}}, %{{GREEDYDATA}}, etc.
+
+5. The display_template should use colors and formatting to make logs visually clear and readable.
    - For timestamps: Use format=%H:%M:%S or format=%Y-%m-%d %H:%M:%S with color=cyan
    - For log levels: 
      * ERROR: color=red,bold
@@ -231,12 +270,14 @@ Requirements:
    - For important fields (like component, module, thread): color=cyan
    - For messages: No color specification (uses default terminal color)
    - Example: "%{{timestamp:format=%H:%M:%S,color=cyan}} [%{{level:color=red,bold}}] %{{message}}"
-4. **Color guidelines for light/dark mode compatibility:**
+
+6. **Color guidelines for light/dark mode compatibility:**
    - AVOID: color=gray (too light in light mode, too dark in dark mode)
    - AVOID: color=white (invisible in light mode)
    - PREFER: cyan, blue, magenta, green, yellow, red (work well in both modes)
    - Use bold for emphasis instead of relying on color alone
-5. Return ONLY the JSON object, no additional text or explanation.
+
+7. Return ONLY the JSON object, no additional text or explanation.
 
 Common Grok patterns you can use:
 - %{{TIMESTAMP_ISO8601:timestamp}} - ISO 8601 timestamp
@@ -244,19 +285,32 @@ Common Grok patterns you can use:
 - %{{SYSLOGTIMESTAMP:timestamp}} - Syslog timestamp
 - %{{LOGLEVEL:level}} - Log level (ERROR, WARN, INFO, DEBUG, etc.)
 - %{{IP:ip}} - IP address
+- %{{IPORHOST:host}} - IP or hostname
 - %{{WORD:field}} - Single word
 - %{{DATA:field}} - Any data (non-greedy)
 - %{{GREEDYDATA:field}} - Any data (greedy, usually for message)
 - %{{NUMBER:field}} - Number
 - %{{INT:field}} - Integer
 - %{{QUOTEDSTRING:field}} - Quoted string
+- %{{URIPATHPARAM:request}} - URI path with parameters
 
 Available colors for display_template (compatible with both light and dark modes):
 - Recommended: color=red, color=green, color=yellow, color=blue, color=magenta, color=cyan
 - Avoid: color=gray, color=white (poor contrast in certain modes)
 - Additional formatting: bold, italic, underline
 - Combine multiple formats with commas: color=red,bold or format=%H:%M:%S,color=cyan
-- For main message text: omit color to use default terminal color (best compatibility)"#,
+- For main message text: omit color to use default terminal color (best compatibility)
+
+Example for JSON-wrapped Nginx error log:
+Input: {{"log":"2024/01/15 10:30:45 [error] 123#123: *456 connect() failed...\\n","stream":"stderr"}}
+Output:
+{{
+    "name": "Nginx Error Log (JSON wrapped)",
+    "pattern": "%{{DATA:timestamp}} \\[%{{WORD:level}}\\] %{{DATA:pid}}: \\*%{{INT:connection}} %{{GREEDYDATA:message}}",
+    "display_template": "%{{timestamp:color=cyan}} [%{{level:color=red,bold}}] %{{message}}",
+    "description": "Nginx error log format extracted from Docker/Kubernetes JSON wrapper",
+    "pre_processor": {{"type": "json_field", "field": "log"}}
+}}"#,
             sample_text
         );
     }
@@ -702,6 +756,7 @@ Available colors for display_template (compatible with both light and dark modes
                                 example: self.pattern_editor.example.clone(),
                                 enabled: true,
                                 display_template: self.pattern_editor.display_template.clone(),
+                                pre_processor: self.pattern_editor.pre_processor.clone(),
                             };
 
                             if let Some(idx) = self.pattern_editor.editing_index {
@@ -807,6 +862,24 @@ Available colors for display_template (compatible with both light and dark modes
                 ui.set_min_width(ui.available_width());
                 ui.label(RichText::new(&pattern.name).strong());
 
+                // Show pre-processor if set
+                if let Some(ref pre_proc) = pattern.pre_processor {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Pre-processor:").strong());
+                        match pre_proc {
+                            AiPreProcessorConfig::JsonField { field } => {
+                                ui.label(
+                                    RichText::new(format!("Extract JSON field \"{}\"", field))
+                                        .monospace()
+                                        .color(Color32::from_rgb(255, 200, 100)),
+                                );
+                            }
+                        }
+                    });
+                }
+
+                ui.add_space(4.0);
                 ui.label(RichText::new("Pattern:").strong());
                 ui.label(RichText::new(&pattern.pattern).monospace().weak());
 
@@ -827,12 +900,24 @@ Available colors for display_template (compatible with both light and dark modes
                 ui.horizontal(|ui| {
                     // Apply pattern button
                     if ui.button(t::grok_ai_apply_pattern()).clicked() {
+                        tracing::info!("Apply pattern button clicked");
                         // Apply to current file as inline pattern
                         if let Some(path) = &self.current_file_path.clone() {
+                            tracing::info!("Current file path: {:?}", path);
+                            // Convert AI pre_processor config to internal type
+                            let pre_processor = pattern
+                                .pre_processor
+                                .as_ref()
+                                .map(|p| p.to_pre_processor())
+                                .unwrap_or_default();
+
+                            tracing::info!("Pre-processor from AI config: {:?}", pre_processor);
+
                             let inline_pattern = InlineGrokPattern {
                                 name: pattern.name.clone(),
                                 pattern: pattern.pattern.clone(),
                                 display_template: pattern.display_template.clone(),
+                                pre_processor: pre_processor.clone(),
                             };
 
                             let file_config = FileGrokConfig {
@@ -841,6 +926,7 @@ Available colors for display_template (compatible with both light and dark modes
                                 builtin_pattern: None,
                                 custom_pattern_name: None,
                                 inline_pattern: Some(inline_pattern.clone()),
+                                pre_processor: pre_processor.clone(),
                             };
 
                             // Set the pattern on the parser for immediate use
@@ -858,6 +944,12 @@ Available colors for display_template (compatible with both light and dark modes
                                 )
                                 .is_ok()
                             {
+                                // Also set the pre-processor
+                                parser.set_pre_processor(pre_processor);
+                                tracing::info!(
+                                    "Pattern set successfully, sending FilePatternChanged action"
+                                );
+
                                 self.enabled = true;
                                 self.use_file_specific = true;
                                 *action = GrokPanelAction::FilePatternChanged {
@@ -867,12 +959,21 @@ Available colors for display_template (compatible with both light and dark modes
                                 self.ai_assist.success_message =
                                     Some(t::grok_ai_pattern_applied().to_string());
                                 self.ai_assist.error_message = None;
+                            } else {
+                                tracing::error!("Failed to set pattern");
                             }
+                        } else {
+                            tracing::warn!("No current file path");
                         }
                     }
 
                     // Save as custom pattern button
                     if ui.button(t::grok_ai_save_as_custom()).clicked() {
+                        let pre_processor = pattern
+                            .pre_processor
+                            .as_ref()
+                            .map(|p| p.to_pre_processor())
+                            .unwrap_or_default();
                         let new_pattern = CustomPattern {
                             name: pattern.name.clone(),
                             pattern: pattern.pattern.clone(),
@@ -885,6 +986,7 @@ Available colors for display_template (compatible with both light and dark modes
                                 .unwrap_or_default(),
                             enabled: true,
                             display_template: pattern.display_template.clone(),
+                            pre_processor,
                         };
                         parser.add_custom_pattern(new_pattern);
                         *action = GrokPanelAction::ConfigChanged;

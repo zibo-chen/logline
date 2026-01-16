@@ -525,6 +525,7 @@ impl LoglineApp {
                     builtin_pattern: Some(pattern.display_name().to_string()),
                     custom_pattern_name: None,
                     inline_pattern: None,
+                    pre_processor: crate::grok_parser::PreProcessor::None,
                 });
                 state.grok_parse_progress = 0;
                 
@@ -579,6 +580,10 @@ impl LoglineApp {
                     );
                     return;
                 }
+                // Apply pre-processor if present on the custom pattern
+                if custom.pre_processor != crate::grok_parser::PreProcessor::None {
+                    parser.set_pre_processor(custom.pre_processor.clone());
+                }
                 
                 // Get state again after error check
                 let state = self.tab_manager.get_active_state_mut().unwrap();
@@ -590,6 +595,7 @@ impl LoglineApp {
                     builtin_pattern: None,
                     custom_pattern_name: Some(name.clone()),
                     inline_pattern: None,
+                    pre_processor: custom.pre_processor.clone(),
                 });
                 state.grok_parse_progress = 0;
                 
@@ -660,7 +666,15 @@ impl LoglineApp {
                         } else {
                             Some(custom.display_template.as_str())
                         };
-                        parser.set_custom_pattern_with_template(custom_name, &custom.pattern, template).is_ok()
+                        let pattern_ok = parser.set_custom_pattern_with_template(custom_name, &custom.pattern, template).is_ok();
+                        if pattern_ok {
+                            if custom.pre_processor != crate::grok_parser::PreProcessor::None {
+                                parser.set_pre_processor(custom.pre_processor.clone());
+                            } else if file_config.pre_processor != crate::grok_parser::PreProcessor::None {
+                                parser.set_pre_processor(file_config.pre_processor.clone());
+                            }
+                        }
+                        pattern_ok
                     } else {
                         false
                     }
@@ -675,7 +689,17 @@ impl LoglineApp {
                     } else {
                         Some(inline.display_template.as_str())
                     };
-                    parser.set_custom_pattern_with_template(&inline.name, &inline.pattern, template).is_ok()
+                    let pattern_ok = parser.set_custom_pattern_with_template(&inline.name, &inline.pattern, template).is_ok();
+                    if pattern_ok {
+                        // Inline patterns may have their own pre_processor
+                        // Priority: inline pattern > file config
+                        if inline.pre_processor != crate::grok_parser::PreProcessor::None {
+                            parser.set_pre_processor(inline.pre_processor.clone());
+                        } else if file_config.pre_processor != crate::grok_parser::PreProcessor::None {
+                            parser.set_pre_processor(file_config.pre_processor.clone());
+                        }
+                    }
+                    pattern_ok
                 } else {
                     false
                 }
@@ -684,6 +708,9 @@ impl LoglineApp {
         };
         
         if pattern_set {
+            // Also restore pre_processor
+            parser.set_pre_processor(file_config.pre_processor.clone());
+            
             if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
                 state.grok_parser = Some(parser);
                 state.grok_config = Some(file_config);
@@ -1291,9 +1318,23 @@ impl eframe::App for LoglineApp {
                     continue;
                 };
                 
-                let Some(pattern) = parser.active_pattern() else {
+                if !parser.has_active_pattern() {
                     continue;
-                };
+                }
+                
+                // Only log once when we start parsing (use a reduced frequency)
+                static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
+                if now > last + 5 {
+                    LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!("Parsing with grok_parser: pattern={:?}, pre_processor={:?}", 
+                        parser.active_pattern_name(), 
+                        parser.pre_processor());
+                }
                 
                 let total_len = state.buffer.len();
                 if total_len == 0 {
@@ -1312,9 +1353,16 @@ impl eframe::App for LoglineApp {
                     
                     if let Some(entry) = state.buffer.get_mut(i) {
                         if entry.grok_fields.is_none() {
-                            if let Some(fields) = pattern.parse(&entry.content) {
+                            // Use parser.parse_with_format() to support mixed patterns and formatting
+                            if let Some((fields, formatted)) =
+                                parser.parse_with_format(&entry.content)
+                            {
                                 if !fields.is_empty() {
                                     entry.set_grok_fields(fields.fields);
+                                    if let Some((plain_text, segments)) = formatted {
+                                        entry.formatted_content = Some(plain_text);
+                                        entry.formatted_segments = Some(segments);
+                                    }
                                 }
                             }
                             parsed_count += 1;
@@ -1868,11 +1916,71 @@ impl eframe::App for LoglineApp {
                                     }
                                 }
                                 GrokPanelAction::FilePatternChanged { path, config } => {
+                                    tracing::info!("FilePatternChanged received for path: {:?}", path);
+                                    tracing::info!("FilePatternChanged config: {:?}", config);
+                                    
                                     // Save per-file grok config
                                     self.config.set_file_grok_config(path.clone(), config.clone());
                                     
-                                    // Update the tab state
+                                    // Update the tab state with the parser that was configured in grok_panel
+                                    let state_found = self.tab_manager.get_state_by_path_mut(&path).is_some();
+                                    tracing::info!("Tab state found for path: {}", state_found);
+                                    
                                     if let Some(state) = self.tab_manager.get_state_by_path_mut(&path) {
+                                        // Create a new parser for this tab with the same configuration
+                                        if let Some(ref config) = config {
+                                            tracing::info!("Config enabled: {}, pattern_type: {}", config.enabled, config.pattern_type);
+                                            if config.enabled {
+                                                use crate::grok_parser::GrokParser;
+                                                
+                                                let mut tab_parser = GrokParser::new();
+                                                // Import custom patterns from global config
+                                                tab_parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
+                                                for (name, pat) in &self.config.grok.custom_definitions {
+                                                    tab_parser.add_pattern_definition(name, pat);
+                                                }
+                                                
+                                                // Set the pattern based on config type
+                                                let pattern_set = match config.pattern_type.as_str() {
+                                                    "inline" => {
+                                                        tracing::info!("Processing inline pattern");
+                                                        if let Some(ref inline) = config.inline_pattern {
+                                                            tracing::info!("Inline pattern found: name={}, pre_processor={:?}", inline.name, inline.pre_processor);
+                                                            let template = if inline.display_template.is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(inline.display_template.as_str())
+                                                            };
+                                                            if tab_parser.set_custom_pattern_with_template(&inline.name, &inline.pattern, template).is_ok() {
+                                                                // Set pre-processor from inline pattern or config
+                                                                let pre_processor = inline.pre_processor.clone();
+                                                                tracing::info!("Setting pre_processor for tab: {:?}", pre_processor);
+                                                                tab_parser.set_pre_processor(pre_processor);
+                                                                true
+                                                            } else {
+                                                                tracing::error!("Failed to set custom pattern");
+                                                                false
+                                                            }
+                                                        } else {
+                                                            tracing::warn!("No inline pattern in config");
+                                                            false
+                                                        }
+                                                    }
+                                                    other => {
+                                                        tracing::info!("Pattern type '{}' not handled in FilePatternChanged", other);
+                                                        false
+                                                    }
+                                                };
+                                                
+                                                if pattern_set {
+                                                    tracing::info!("Tab parser configured successfully for path: {:?}", path);
+                                                    state.grok_parser = Some(tab_parser);
+                                                } else {
+                                                    tracing::warn!("Pattern was not set for tab");
+                                                }
+                                            }
+                                        }
+                                        
                                         state.grok_config = config;
                                         state.grok_parse_progress = 0;
                                         // Clear existing grok fields to reparse
