@@ -103,7 +103,7 @@ impl Toolbar {
             };
 
             // Open file button
-            if styled_button(ui, "📂", &t::open(), &t::open_file_tooltip(), false, None) {
+            if styled_button(ui, "📂", t::open(), t::open_file_tooltip(), false, None) {
                 action = ToolbarAction::OpenFile;
             }
 
@@ -132,8 +132,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 monitoring_icon,
-                &monitoring_text,
-                &t::toggle_monitoring_tooltip(),
+                monitoring_text,
+                t::toggle_monitoring_tooltip(),
                 state.auto_scroll,
                 monitoring_color,
             ) {
@@ -144,8 +144,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 "🗑",
-                &t::clear(),
-                &t::clear_display_tooltip(),
+                t::clear(),
+                t::clear_display_tooltip(),
                 false,
                 None,
             ) {
@@ -156,8 +156,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 "🔄",
-                &t::reload(),
-                &t::reload_file_tooltip(),
+                t::reload(),
+                t::reload_file_tooltip(),
                 false,
                 None,
             ) {
@@ -189,8 +189,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 reverse_icon,
-                &reverse_text,
-                &t::toggle_order_tooltip(),
+                reverse_text,
+                t::toggle_order_tooltip(),
                 state.reverse_order,
                 reverse_color,
             ) {
@@ -216,8 +216,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 "🔍",
-                &t::search(),
-                &t::toggle_search_tooltip(),
+                t::search(),
+                t::toggle_search_tooltip(),
                 state.search_visible,
                 search_color,
             ) {
@@ -225,7 +225,7 @@ impl Toolbar {
             }
 
             // Go to line button
-            if styled_button(ui, "↓", &t::go_to(), &t::go_to_line_tooltip(), false, None) {
+            if styled_button(ui, "↓", t::go_to(), t::go_to_line_tooltip(), false, None) {
                 action = ToolbarAction::GoToLine;
             }
 
@@ -258,8 +258,8 @@ impl Toolbar {
             if styled_button(
                 ui,
                 split_icon,
-                &split_text,
-                &t::toggle_split_tooltip(),
+                split_text,
+                t::toggle_split_tooltip(),
                 state.split_view_active,
                 split_color,
             ) {
@@ -351,11 +351,11 @@ impl Toolbar {
                     .clicked()
                 };
 
-                if pill_btn(ui, &t::all(), &t::show_all_levels()) {
+                if pill_btn(ui, t::all(), t::show_all_levels()) {
                     filter.enable_all_levels();
                 }
 
-                if pill_btn(ui, &t::errors(), &t::errors_and_warnings_only()) {
+                if pill_btn(ui, t::errors(), t::errors_and_warnings_only()) {
                     filter.errors_and_warnings_only();
                 }
 
@@ -381,11 +381,11 @@ impl Toolbar {
                 .clicked()
             };
 
-            if nav_btn(ui, "⏮", &t::go_to_top_tooltip()) {
+            if nav_btn(ui, "⏮", t::go_to_top_tooltip()) {
                 action = ToolbarAction::GoToTop;
             }
 
-            if nav_btn(ui, "⏭", &t::go_to_bottom_tooltip()) {
+            if nav_btn(ui, "⏭", t::go_to_bottom_tooltip()) {
                 action = ToolbarAction::GoToBottom;
             }
 

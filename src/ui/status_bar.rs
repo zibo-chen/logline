@@ -12,8 +12,6 @@ use std::path::Path;
 pub enum GrokPatternSelection {
     /// No pattern (disable grok)
     None,
-    /// Built-in pattern
-    Builtin(BuiltinPattern),
     /// Custom pattern by name
     Custom(String),
 }
@@ -249,27 +247,10 @@ impl StatusBar {
                                 GrokPatternSelection::None,
                             ));
                         }
-
                         ui.separator();
-
-                        // Built-in patterns
-                        if !grok_info.builtin_patterns.is_empty() {
-                            ui.label(RichText::new(t::grok_builtin_patterns()).weak().small());
-                            for (pattern, display_name) in &grok_info.builtin_patterns {
-                                let is_selected = grok_info.enabled
-                                    && grok_info.current_pattern_name.as_deref()
-                                        == Some(*display_name);
-                                if ui.selectable_label(is_selected, *display_name).clicked() {
-                                    action = Some(StatusBarAction::ChangeGrokPattern(
-                                        GrokPatternSelection::Builtin(*pattern),
-                                    ));
-                                }
-                            }
-                        }
 
                         // Custom patterns
                         if !grok_info.custom_pattern_names.is_empty() {
-                            ui.separator();
                             ui.label(RichText::new(t::grok_custom_patterns()).weak().small());
                             for name in &grok_info.custom_pattern_names {
                                 let is_selected = grok_info.enabled

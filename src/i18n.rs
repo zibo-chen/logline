@@ -1212,13 +1212,6 @@ impl Translations {
         }
     }
 
-    pub fn grok_builtin_patterns() -> &'static str {
-        match current_language() {
-            Language::English => "Built-in Patterns",
-            Language::Chinese => "内置模板",
-        }
-    }
-
     pub fn grok_custom_patterns() -> &'static str {
         match current_language() {
             Language::English => "Custom Patterns",
@@ -1251,27 +1244,6 @@ impl Translations {
         match current_language() {
             Language::English => "Example",
             Language::Chinese => "示例",
-        }
-    }
-
-    pub fn grok_test_pattern() -> &'static str {
-        match current_language() {
-            Language::English => "Test Pattern",
-            Language::Chinese => "测试模板",
-        }
-    }
-
-    pub fn grok_test_input() -> &'static str {
-        match current_language() {
-            Language::English => "Test Input",
-            Language::Chinese => "测试输入",
-        }
-    }
-
-    pub fn grok_test_result() -> &'static str {
-        match current_language() {
-            Language::English => "Test Result",
-            Language::Chinese => "测试结果",
         }
     }
 
@@ -1310,20 +1282,6 @@ impl Translations {
         }
     }
 
-    pub fn grok_no_pattern_selected() -> &'static str {
-        match current_language() {
-            Language::English => "No pattern selected",
-            Language::Chinese => "未选择模板",
-        }
-    }
-
-    pub fn grok_parsed_fields() -> &'static str {
-        match current_language() {
-            Language::English => "Parsed Fields",
-            Language::Chinese => "解析字段",
-        }
-    }
-
     pub fn grok_no_match() -> &'static str {
         match current_language() {
             Language::English => "No match",
@@ -1354,13 +1312,6 @@ impl Translations {
         }
     }
 
-    pub fn grok_formatted_preview() -> &'static str {
-        match current_language() {
-            Language::English => "Formatted Preview",
-            Language::Chinese => "格式化预览",
-        }
-    }
-
     pub fn grok_active_pattern() -> &'static str {
         match current_language() {
             Language::English => "Active Pattern",
@@ -1372,13 +1323,6 @@ impl Translations {
         match current_language() {
             Language::English => "No custom patterns defined",
             Language::Chinese => "暂无自定义模板",
-        }
-    }
-
-    pub fn grok_pattern_definitions() -> &'static str {
-        match current_language() {
-            Language::English => "Pattern Definitions",
-            Language::Chinese => "模板定义",
         }
     }
 
@@ -1403,27 +1347,6 @@ impl Translations {
         }
     }
 
-    pub fn grok_add_definition() -> &'static str {
-        match current_language() {
-            Language::English => "Add Definition",
-            Language::Chinese => "添加定义",
-        }
-    }
-
-    pub fn grok_definition_name() -> &'static str {
-        match current_language() {
-            Language::English => "Definition Name",
-            Language::Chinese => "定义名称",
-        }
-    }
-
-    pub fn grok_definition_pattern() -> &'static str {
-        match current_language() {
-            Language::English => "Definition Pattern",
-            Language::Chinese => "定义模板",
-        }
-    }
-
     // ============ AI Assist ============
     pub fn grok_ai_assist() -> &'static str {
         match current_language() {
@@ -1432,17 +1355,10 @@ impl Translations {
         }
     }
 
-    pub fn grok_ai_generate_prompt() -> &'static str {
-        match current_language() {
-            Language::English => "Generate Prompt",
-            Language::Chinese => "生成提示词",
-        }
-    }
-
     pub fn grok_ai_prompt_hint() -> &'static str {
         match current_language() {
-            Language::English => "Click to generate a prompt for LLM. Copy the prompt, send it to your favorite LLM (ChatGPT, Claude, etc.), then paste the JSON response below.",
-            Language::Chinese => "点击生成提示词。将提示词复制给您喜欢的LLM（如ChatGPT、Claude等），然后将返回的JSON粘贴到下方。",
+            Language::English => "Click 'Copy Prompt' to copy the prompt, paste it to your LLM (ChatGPT, Claude, etc.), then click 'Paste Prompt' and paste the JSON response.",
+            Language::Chinese => "点击「复制提示词」后会自动复制，请粘贴给LLM（如ChatGPT、Claude等），再点击「粘贴提示词」并粘贴JSON响应。",
         }
     }
 
@@ -1455,36 +1371,50 @@ impl Translations {
 
     pub fn grok_ai_prompt_copied() -> &'static str {
         match current_language() {
-            Language::English => "Prompt copied to clipboard!",
-            Language::Chinese => "提示词已复制到剪贴板！",
+            Language::English => "Prompt copied. Paste it to your LLM.",
+            Language::Chinese => "提示词已复制到剪贴板，请粘贴给LLM。",
         }
     }
 
     pub fn grok_ai_paste_json() -> &'static str {
         match current_language() {
-            Language::English => "Paste JSON Response",
-            Language::Chinese => "粘贴JSON响应",
+            Language::English => "Paste Prompt Result",
+            Language::Chinese => "粘贴提示词",
         }
     }
 
     pub fn grok_ai_json_placeholder() -> &'static str {
         match current_language() {
             Language::English => "Paste the JSON response from LLM here...",
-            Language::Chinese => "在此粘贴LLM返回的JSON响应...",
+            Language::Chinese => "在此粘贴LLM返回的JSON模板...",
         }
     }
 
-    pub fn grok_ai_apply_pattern() -> &'static str {
+    pub fn grok_ai_parse_preview() -> &'static str {
         match current_language() {
-            Language::English => "Apply Pattern",
-            Language::Chinese => "应用模板",
+            Language::English => "Parse Preview",
+            Language::Chinese => "解析预览",
         }
     }
 
-    pub fn grok_ai_pattern_applied() -> &'static str {
+    pub fn grok_ai_sample_log() -> &'static str {
         match current_language() {
-            Language::English => "Pattern applied successfully!",
-            Language::Chinese => "模板应用成功！",
+            Language::English => "Sample Log:",
+            Language::Chinese => "示例日志:",
+        }
+    }
+
+    pub fn grok_ai_formatted_result() -> &'static str {
+        match current_language() {
+            Language::English => "Formatted Result:",
+            Language::Chinese => "格式化结果:",
+        }
+    }
+
+    pub fn grok_ai_parse_success() -> &'static str {
+        match current_language() {
+            Language::English => "Pattern parsed successfully!",
+            Language::Chinese => "模板解析成功！",
         }
     }
 
@@ -1499,13 +1429,6 @@ impl Translations {
         match current_language() {
             Language::English => "Please open a log file first",
             Language::Chinese => "请先打开一个日志文件",
-        }
-    }
-
-    pub fn grok_ai_save_as_custom() -> &'static str {
-        match current_language() {
-            Language::English => "Save as Custom Pattern",
-            Language::Chinese => "保存为自定义模板",
         }
     }
 
@@ -1548,6 +1471,105 @@ impl Translations {
         match current_language() {
             Language::English => "More info: github.com/zibo-chen/logline-agent",
             Language::Chinese => "更多信息：github.com/zibo-chen/logline-agent",
+        }
+    }
+
+    // ============ Status Messages ============
+    pub fn file_opened_success() -> &'static str {
+        match current_language() {
+            Language::English => "File opened",
+            Language::Chinese => "已打开文件",
+        }
+    }
+
+    pub fn file_open_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open file",
+            Language::Chinese => "打开文件失败",
+        }
+    }
+
+    pub fn file_open_in_split_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open file in split view",
+            Language::Chinese => "在分屏中打开文件失败",
+        }
+    }
+
+    pub fn remote_stream_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open remote stream",
+            Language::Chinese => "打开远程流失败",
+        }
+    }
+
+    pub fn absolute_path_copied() -> &'static str {
+        match current_language() {
+            Language::English => "Absolute path copied",
+            Language::Chinese => "已复制绝对路径",
+        }
+    }
+
+    pub fn relative_path_copied() -> &'static str {
+        match current_language() {
+            Language::English => "Relative path copied",
+            Language::Chinese => "已复制相对路径",
+        }
+    }
+
+    pub fn filename_copied() -> &'static str {
+        match current_language() {
+            Language::English => "Filename copied",
+            Language::Chinese => "已复制文件名",
+        }
+    }
+
+    pub fn finder_open_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open Finder",
+            Language::Chinese => "打开访达失败",
+        }
+    }
+
+    pub fn config_save_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to save config",
+            Language::Chinese => "保存配置失败",
+        }
+    }
+
+    pub fn server_error() -> &'static str {
+        match current_language() {
+            Language::English => "Server error",
+            Language::Chinese => "服务器错误",
+        }
+    }
+
+    pub fn mcp_server_started() -> &'static str {
+        match current_language() {
+            Language::English => "MCP server started",
+            Language::Chinese => "MCP服务已启动",
+        }
+    }
+
+    pub fn mcp_server_start_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to start MCP server",
+            Language::Chinese => "MCP服务启动失败",
+        }
+    }
+
+    pub fn search_placeholder_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Search...",
+            Language::Chinese => "搜索...",
+        }
+    }
+
+    pub fn open_file_button() -> &'static str {
+        match current_language() {
+            Language::English => "📁 Open File",
+            Language::Chinese => "📁 打开文件",
         }
     }
 }

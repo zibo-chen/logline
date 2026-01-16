@@ -498,52 +498,6 @@ impl LoglineApp {
                 
                 self.status_bar.set_message(t::grok_pattern_cleared(), StatusLevel::Info);
             }
-            GrokPatternSelection::Builtin(pattern) => {
-                // Create a new parser for this tab
-                let mut parser = GrokParser::new();
-                // Import custom patterns from global config
-                parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
-                for (name, pat) in &self.config.grok.custom_definitions {
-                    parser.add_pattern_definition(name, pat);
-                }
-                
-                if let Err(e) = parser.set_builtin_pattern(pattern) {
-                    self.status_bar.set_message(
-                        format!("{}: {}", t::grok_pattern_error(), e),
-                        StatusLevel::Error,
-                    );
-                    return;
-                }
-                
-                // Get state again after error check
-                let state = self.tab_manager.get_active_state_mut().unwrap();
-                
-                state.grok_parser = Some(parser);
-                state.grok_config = Some(FileGrokConfig {
-                    enabled: true,
-                    pattern_type: "builtin".to_string(),
-                    builtin_pattern: Some(pattern.display_name().to_string()),
-                    custom_pattern_name: None,
-                    inline_pattern: None,
-                    pre_processor: crate::grok_parser::PreProcessor::None,
-                });
-                state.grok_parse_progress = 0;
-                
-                // Clear grok fields to reparse
-                for entry in state.buffer.iter_mut() {
-                    entry.clear_grok_fields();
-                }
-                
-                // Save file-specific config
-                let config = state.grok_config.clone();
-                let path = state.path.clone();
-                self.config.set_file_grok_config(path, config);
-                
-                self.status_bar.set_message(
-                    format!("{}: {}", t::grok_active_pattern(), pattern.display_name()),
-                    StatusLevel::Success,
-                );
-            }
             GrokPatternSelection::Custom(name) => {
                 // Find custom pattern from global config
                 let custom = self.config.grok.custom_patterns.iter().find(|p| p.name == name).cloned();
@@ -753,14 +707,16 @@ impl LoglineApp {
             match result {
                 Ok(()) => {
                     let endpoint = server.endpoint_url();
+                    let msg = format!("{}: {}", t::mcp_server_started(), endpoint);
                     self.status_bar
-                        .set_message(format!("MCP服务已启动: {}", endpoint), StatusLevel::Success);
+                        .set_message(msg, StatusLevel::Success);
                     tracing::info!("MCP server started at {}", endpoint);
                     self.mcp_server = Some(server);
                 }
                 Err(e) => {
+                    let msg = format!("{}: {}", t::mcp_server_start_failed(), e);
                     self.status_bar
-                        .set_message(format!("MCP服务启动失败: {}", e), StatusLevel::Error);
+                        .set_message(msg, StatusLevel::Error);
                     tracing::error!("Failed to start MCP server: {}", e);
                 }
             }
@@ -807,8 +763,9 @@ impl LoglineApp {
                         stream_id,
                         remote_addr
                     );
+                    let msg = format!("{} '{}' ({})", t::agent_connected(), project_name, remote_addr);
                     self.status_bar.set_message(
-                        format!("Agent '{}' 已连接 ({})", project_name, remote_addr),
+                        msg,
                         StatusLevel::Success,
                     );
 
@@ -821,8 +778,9 @@ impl LoglineApp {
                     stream_id,
                 } => {
                     tracing::info!("Agent '{}' ({}) disconnected", project_name, stream_id);
+                    let msg = format!("{} '{}'", t::agent_disconnected(), stream_id);
                     self.status_bar.set_message(
-                        format!("Agent '{}' 已断开", stream_id),
+                        msg,
                         StatusLevel::Warning,
                     );
                     has_stream_changes = true;
@@ -836,8 +794,9 @@ impl LoglineApp {
                 }
                 ServerEvent::Error(e) => {
                     tracing::error!("Server error: {}", e);
+                    let msg = format!("{}: {}", t::server_error(), e);
                     self.status_bar
-                        .set_message(format!("服务器错误: {}", e), StatusLevel::Error);
+                        .set_message(msg, StatusLevel::Error);
                 }
                 ServerEvent::Started { port } => {
                     tracing::info!("Remote server started on port {}", port);
@@ -1220,14 +1179,16 @@ impl eframe::App for LoglineApp {
                         // Open the dropped file in a new tab
                         match self.open_file(path.clone(), None) {
                             Ok(_) => {
+                                let msg = format!("{}: {}", t::file_opened_success(), path.display());
                                 self.status_bar.set_message(
-                                    format!("已打开文件: {}", path.display()),
+                                    msg,
                                     StatusLevel::Success,
                                 );
                             }
                             Err(e) => {
+                                let msg = format!("{}: {}", t::file_open_failed(), e);
                                 self.status_bar.set_message(
-                                    format!("打开文件失败: {}", e),
+                                    msg,
                                     StatusLevel::Error,
                                 );
                             }
@@ -1273,15 +1234,14 @@ impl eframe::App for LoglineApp {
         }
 
         // Handle window close button - minimize to tray instead of quitting
-        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit {
-            if self.tray_manager.is_some() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit
+            && self.tray_manager.is_some() {
                 // Prevent the window from closing
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 // Hide the window instead
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 tracing::info!("Window minimized to tray");
             }
-        }
 
         // Apply theme on first frame to ensure it takes effect after eframe initialization
         if self.first_frame {
@@ -1671,14 +1631,16 @@ impl eframe::App for LoglineApp {
 
                             match self.remote_server.start() {
                                 Ok(()) => {
+                                    let msg = format!("{}: {}", t::server_started(), port);
                                     self.status_bar.set_message(
-                                        format!("远程服务已启动 (端口 {})", port),
+                                        msg,
                                         StatusLevel::Success,
                                     );
                                 }
                                 Err(e) => {
+                                    let msg = format!("{}: {}", t::server_start_failed(), e);
                                     self.status_bar.set_message(
-                                        format!("启动服务失败: {}", e),
+                                        msg,
                                         StatusLevel::Error,
                                     );
                                 }
@@ -1706,7 +1668,7 @@ impl eframe::App for LoglineApp {
                                 ExplorerAction::OpenLocalFile(path) => {
                                     if let Err(e) = self.open_file(path.clone(), None) {
                                         self.status_bar.set_message(
-                                            format!("打开文件失败: {}", e),
+                                            format!("{}: {}", t::file_open_failed(), e),
                                             StatusLevel::Error,
                                         );
                                     }
@@ -1714,7 +1676,7 @@ impl eframe::App for LoglineApp {
                                 ExplorerAction::OpenRemoteStream(stream) => {
                                     if let Err(e) = self.open_remote_stream(stream.project_name.clone(), stream.cache_path.clone()) {
                                         self.status_bar.set_message(
-                                            format!("打开远程流失败: {}", e),
+                                            format!("{}: {}", t::remote_stream_failed(), e),
                                             StatusLevel::Error,
                                         );
                                     }
@@ -1725,7 +1687,7 @@ impl eframe::App for LoglineApp {
                                 ExplorerAction::OpenInSplit(path) => {
                                     if let Err(e) = self.open_file_in_split(path.clone()) {
                                         self.status_bar.set_message(
-                                            format!("在分屏中打开文件失败: {}", e),
+                                            format!("{}: {}", t::file_open_in_split_failed(), e),
                                             StatusLevel::Error,
                                         );
                                     }
@@ -1734,7 +1696,7 @@ impl eframe::App for LoglineApp {
                                     let abs_path = path.display().to_string();
                                     ui.ctx().copy_text(abs_path.clone());
                                     self.status_bar.set_message(
-                                        format!("已复制绝对路径: {}", abs_path),
+                                        format!("{}: {}", t::absolute_path_copied(), abs_path),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -1749,7 +1711,7 @@ impl eframe::App for LoglineApp {
                                     };
                                     ui.ctx().copy_text(rel_path.clone());
                                     self.status_bar.set_message(
-                                        format!("已复制相对路径: {}", rel_path),
+                                        format!("{}: {}", t::relative_path_copied(), rel_path),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -1760,7 +1722,7 @@ impl eframe::App for LoglineApp {
                                         .unwrap_or_else(|| path.display().to_string());
                                     ui.ctx().copy_text(filename.clone());
                                     self.status_bar.set_message(
-                                        format!("已复制文件名: {}", filename),
+                                        format!("{}: {}", t::filename_copied(), filename),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -1773,7 +1735,7 @@ impl eframe::App for LoglineApp {
                                             .spawn()
                                         {
                                             self.status_bar.set_message(
-                                                format!("打开访达失败: {}", e),
+                                                format!("{}: {}", t::finder_open_failed(), e),
                                                 StatusLevel::Error,
                                             );
                                         } else {
@@ -1791,7 +1753,7 @@ impl eframe::App for LoglineApp {
                                             .spawn()
                                         {
                                             self.status_bar.set_message(
-                                                format!("打开资源管理器失败: {}", e),
+                                                format!("{}: {}", t::file_manager_open_failed(), e),
                                                 StatusLevel::Error,
                                             );
                                         } else {
@@ -1810,7 +1772,7 @@ impl eframe::App for LoglineApp {
                                                 .spawn()
                                             {
                                                 self.status_bar.set_message(
-                                                    format!("打开文件管理器失败: {}", e),
+                                                    format!("{}: {}", t::file_manager_open_failed(), e),
                                                     StatusLevel::Error,
                                                 );
                                             } else {
@@ -1827,7 +1789,7 @@ impl eframe::App for LoglineApp {
                                     self.config.recent_files.retain(|p| p != &path);
                                     if let Err(e) = self.config.save() {
                                         self.status_bar.set_message(
-                                            format!("保存配置失败: {}", e),
+                                            format!("{}: {}", t::config_save_failed(), e),
                                             StatusLevel::Error,
                                         );
                                     } else {
@@ -1842,7 +1804,7 @@ impl eframe::App for LoglineApp {
                                     self.config.recent_files.clear();
                                     if let Err(e) = self.config.save() {
                                         self.status_bar.set_message(
-                                            format!("保存配置失败: {}", e),
+                                            format!("{}: {}", t::config_save_failed(), e),
                                             StatusLevel::Error,
                                         );
                                     } else {
@@ -2045,12 +2007,11 @@ impl eframe::App for LoglineApp {
                                     BookmarkAction::RemoveSegment(indices) => {
                                         // Remove all bookmarks in the segment
                                         let count = state.buffer.toggle_bookmarks(&indices);
-                                        if count > 0 {
-                                            if state.filter.filter.bookmarks_only {
+                                        if count > 0
+                                            && state.filter.filter.bookmarks_only {
                                                 state.filter.mark_dirty();
                                                 state.update_filter();
                                             }
-                                        }
                                         // Auto-save bookmarks
                                         if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
                                             self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
@@ -2181,8 +2142,8 @@ impl eframe::App for LoglineApp {
                                 }
                             }
                         } else if let Some(right_rect) = right_rect_opt {
-                            if right_rect.contains(pointer_pos) {
-                                if self.tab_manager.split_view.active_pane() != crate::ui::split_view::SplitPane::Right {
+                            if right_rect.contains(pointer_pos)
+                                && self.tab_manager.split_view.active_pane() != crate::ui::split_view::SplitPane::Right {
                                     self.tab_manager.split_view.set_active_pane(crate::ui::split_view::SplitPane::Right);
                                     if let Some(right_id) = self.tab_manager.split_view.get_pane_tab(crate::ui::split_view::SplitPane::Right) {
                                         self.tab_manager.tab_bar.active_tab = Some(right_id);
@@ -2193,7 +2154,6 @@ impl eframe::App for LoglineApp {
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                 }
@@ -2315,7 +2275,7 @@ impl eframe::App for LoglineApp {
                                 ui.add_space(30.0);
                                 
                                 // Open file button
-                                let button = egui::Button::new(RichText::new("📁 打开文件").size(16.0))
+                                let button = egui::Button::new(RichText::new(t::open_file_button()).size(16.0))
                                     .min_size(egui::vec2(180.0, 40.0));
                                 if ui.add(button).clicked() {
                                     self.file_picker_dialog.show_dialog();
@@ -2443,7 +2403,7 @@ impl eframe::App for LoglineApp {
             FilePickerAction::OpenFile(path, encoding) => {
                 if let Err(e) = self.open_file(path.clone(), encoding) {
                     self.status_bar
-                        .set_message(format!("打开文件失败: {}", e), StatusLevel::Error);
+                        .set_message(format!("{}: {}", t::file_open_failed(), e), StatusLevel::Error);
                 }
             }
             FilePickerAction::Cancel => {}

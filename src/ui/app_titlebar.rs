@@ -1,5 +1,6 @@
 //! Application-level title bar with search
 
+use crate::i18n::Translations as t;
 use eframe::egui::{self, Color32, CornerRadius, Stroke, StrokeKind};
 
 /// Application title bar with global search
@@ -116,7 +117,9 @@ impl AppTitleBar {
 
                     // Text input
                     let text_edit = egui::TextEdit::singleline(&mut self.search_query)
-                        .hint_text(egui::RichText::new("搜索...").color(hint_color))
+                        .hint_text(
+                            egui::RichText::new(t::search_placeholder_hint()).color(hint_color),
+                        )
                         .frame(false)
                         .desired_width(search_width - 80.0)
                         .margin(egui::vec2(0.0, 2.0));
@@ -132,14 +135,12 @@ impl AppTitleBar {
                     }
 
                     // Trigger search on Enter or when text changes
-                    if search_response.changed()
+                    if (search_response.changed()
                         || (search_response.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        if !self.search_query.is_empty() {
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                        && !self.search_query.is_empty() {
                             search_triggered = Some(self.search_query.clone());
                         }
-                    }
 
                     // Show clear button when there's text
                     if !self.search_query.is_empty() {

@@ -333,20 +333,6 @@ impl CompiledPattern {
         (result, segments)
     }
 
-    /// Apply a template string, replacing %{field} placeholders with values
-    pub fn apply_template(template: &str, fields: &HashMap<String, String>) -> String {
-        let mut result = template.to_string();
-        // Simple replacement without style parsing
-        let re = regex::Regex::new(r"%\{([^:}]+)(?::[^}]*)?\}").unwrap();
-        result = re
-            .replace_all(&result, |caps: &regex::Captures| {
-                let field_name = &caps[1];
-                fields.get(field_name).map(|s| s.as_str()).unwrap_or("")
-            })
-            .to_string();
-        result
-    }
-
     /// Apply template with style information
     /// Supports syntax like: %{field:color=red,bold} %{timestamp:format=%Y-%m-%d,color=#00FF00}
     pub fn apply_template_with_style(
@@ -627,16 +613,49 @@ impl GrokParser {
         Ok(())
     }
 
+    /// Test a custom pattern against a line without mutating parser state
+    pub fn test_custom_pattern(
+        &self,
+        name: &str,
+        pattern_str: &str,
+        display_template: Option<&str>,
+        text: &str,
+    ) -> Result<Option<ParsedFields>> {
+        // Build a fresh Grok instance and include custom definitions
+        let mut grok = Grok::default();
+        for (def_name, def_pattern) in &self.custom_definitions {
+            grok.add_pattern(def_name, def_pattern);
+        }
+
+        let compiled = grok
+            .compile(pattern_str, false)
+            .with_context(|| format!("Failed to compile pattern: {}", name))?;
+
+        let parsed_template = if let Some(template) = display_template {
+            if !template.is_empty() {
+                Some(CompiledPattern::parse_template_str(template))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let compiled_pattern = CompiledPattern {
+            pattern: compiled,
+            display_template: display_template
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            parsed_template,
+        };
+
+        Ok(compiled_pattern.parse(text))
+    }
+
     /// Clear the active pattern
     pub fn clear_pattern(&mut self) {
         self.active_pattern = None;
         self.active_pattern_name = None;
-    }
-
-    /// Parse a log line with the active pattern
-    /// If a pre-processor is configured, it will be applied first.
-    pub fn parse(&self, text: &str) -> Option<ParsedFields> {
-        self.parse_with_pattern(text).map(|(fields, _)| fields)
     }
 
     /// Parse a log line and return formatted segments if available
