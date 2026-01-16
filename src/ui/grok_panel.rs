@@ -178,35 +178,65 @@ impl GrokPanel {
             return;
         }
 
-        let sample_text = self
-            .ai_assist
-            .sample_lines
-            .iter()
-            .take(10)
-            .enumerate()
-            .map(|(i, line)| format!("{}. {}", i + 1, line))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Sample from different parts of the file to cover more cases
+        let total_lines = self.ai_assist.sample_lines.len();
+        let sample_count = 10.min(total_lines);
+
+        let sample_text = if total_lines <= sample_count {
+            // If we have 10 or fewer lines, use them all
+            self.ai_assist
+                .sample_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| format!("{}. {}", i + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // Sample from different parts of the file
+            let step = total_lines / sample_count;
+            (0..sample_count)
+                .map(|i| {
+                    let idx = (i * step + step / 2).min(total_lines - 1);
+                    format!("{}. {}", i + 1, &self.ai_assist.sample_lines[idx])
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
 
         self.ai_assist.generated_prompt = format!(
             r#"You are a log parsing expert. Analyze the following log lines and generate a Grok pattern to parse them.
 
-Sample log lines:
+Sample log lines (sampled from different parts of the file):
 {}
 
 Please analyze these log lines and return a JSON object with the following structure:
 {{
     "name": "Pattern name describing the log format",
     "pattern": "The Grok pattern string to parse these logs",
-    "display_template": "Display template using %{{field}} placeholders",
+    "display_template": "Display template using %{{field:format=...,color=...}} syntax",
     "description": "Brief description of what this pattern matches"
 }}
 
 Requirements:
 1. The Grok pattern should extract meaningful fields like timestamp, log level, message, etc.
 2. Use standard Grok patterns like %{{TIMESTAMP_ISO8601}}, %{{LOGLEVEL}}, %{{GREEDYDATA}}, etc.
-3. The display_template should format the parsed fields nicely, e.g., "%{{timestamp}} [%{{level}}] %{{message}}"
-4. Return ONLY the JSON object, no additional text or explanation.
+3. The display_template should use colors and formatting to make logs visually clear and readable.
+   - For timestamps: Use format=%H:%M:%S or format=%Y-%m-%d %H:%M:%S with color=cyan
+   - For log levels: 
+     * ERROR: color=red,bold
+     * WARN/WARNING: color=yellow,bold
+     * INFO: color=green
+     * DEBUG: color=blue
+     * TRACE: color=magenta
+   - For important fields (like component, module, thread): color=cyan
+   - For messages: No color specification (uses default terminal color)
+   - Example: "%{{timestamp:format=%H:%M:%S,color=cyan}} [%{{level:color=red,bold}}] %{{message}}"
+4. **Color guidelines for light/dark mode compatibility:**
+   - AVOID: color=gray (too light in light mode, too dark in dark mode)
+   - AVOID: color=white (invisible in light mode)
+   - PREFER: cyan, blue, magenta, green, yellow, red (work well in both modes)
+   - Use bold for emphasis instead of relying on color alone
+5. Return ONLY the JSON object, no additional text or explanation.
 
 Common Grok patterns you can use:
 - %{{TIMESTAMP_ISO8601:timestamp}} - ISO 8601 timestamp
@@ -219,7 +249,14 @@ Common Grok patterns you can use:
 - %{{GREEDYDATA:field}} - Any data (greedy, usually for message)
 - %{{NUMBER:field}} - Number
 - %{{INT:field}} - Integer
-- %{{QUOTEDSTRING:field}} - Quoted string"#,
+- %{{QUOTEDSTRING:field}} - Quoted string
+
+Available colors for display_template (compatible with both light and dark modes):
+- Recommended: color=red, color=green, color=yellow, color=blue, color=magenta, color=cyan
+- Avoid: color=gray, color=white (poor contrast in certain modes)
+- Additional formatting: bold, italic, underline
+- Combine multiple formats with commas: color=red,bold or format=%H:%M:%S,color=cyan
+- For main message text: omit color to use default terminal color (best compatibility)"#,
             sample_text
         );
     }
