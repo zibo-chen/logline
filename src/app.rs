@@ -10,6 +10,7 @@ use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
+use crate::ui::close_dialog::{CloseDialog, CloseDialogResult};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
@@ -102,6 +103,12 @@ pub struct LoglineApp {
     should_quit: bool,
     /// Whether tray has been initialized
     tray_initialized: bool,
+    /// Whether window is hidden to tray
+    window_hidden: bool,
+
+    // === Close Dialog ===
+    /// Close confirmation dialog
+    close_dialog: CloseDialog,
 
     // === Bookmarks Persistence ===
     /// Bookmarks storage
@@ -154,6 +161,7 @@ impl LoglineApp {
         settings_panel.mcp_port = config.mcp.port.to_string();
         settings_panel.server_port = config.remote_server.port.to_string();
         settings_panel.enable_remote_service = config.remote_server.enabled;
+        settings_panel.close_button_behavior = config.window.close_button_behavior;
 
         // Initialize MCP server if enabled
         let (mcp_server, tokio_runtime) = {
@@ -286,6 +294,9 @@ impl LoglineApp {
             tray_manager: None,
             should_quit: false,
             tray_initialized: false,
+            window_hidden: false,
+            // Close dialog
+            close_dialog: CloseDialog::new(),
             // Load bookmarks from disk
             bookmarks_store: BookmarksStore::load().unwrap_or_default(),
         }
@@ -1227,40 +1238,38 @@ impl eframe::App for LoglineApp {
                 match event {
                     TrayEvent::ShowWindow => {
                         // Restore the window
+                        self.window_hidden = false;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                     TrayEvent::HideWindow => {
-                        // Minimize the window to tray
+                        // Minimize window (Windows compatible)
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        tracing::info!("Window minimized to tray via menu");
                     }
                     TrayEvent::OpenFile => {
-                        // Show file picker dialog
-                        self.file_picker_dialog.show_dialog();
-                        // Also restore window if minimized
+                        // Restore window and focus
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // Open file dialog
+                        self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                        self.file_picker_dialog.show_dialog();
                     }
                     TrayEvent::Settings => {
-                        // Open settings panel
-                        self.activity_bar.active_view = crate::ui::activity_bar::ActivityView::Settings;
-                        self.sidebar_visible = true;
-                        // Also restore window if minimized
+                        // Restore window and focus
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // Open settings panel
+                        self.sidebar_visible = true;
+                        self.activity_bar.active_view = ActivityView::Settings;
                     }
                     TrayEvent::About => {
-                        // Show about dialog (open settings panel)
-                        self.activity_bar.active_view = crate::ui::activity_bar::ActivityView::Settings;
-                        self.sidebar_visible = true;
-                        // Also restore window if minimized
+                        // Restore window and focus
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // Show about dialog - switch to settings which has app info
+                        self.sidebar_visible = true;
+                        self.activity_bar.active_view = ActivityView::Settings;
                     }
                     TrayEvent::Quit => {
                         // Actually quit the application
@@ -1272,21 +1281,80 @@ impl eframe::App for LoglineApp {
             }
         }
 
-        // Handle window close button - minimize to tray instead of quitting
+        // Handle window close button with dialog or configured behavior
+        use crate::config::CloseButtonBehavior;
+        
         let tray_quit_requested = self
             .tray_manager
             .as_ref()
             .map(|tray| tray.is_quit_requested())
             .unwrap_or(false);
 
-        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit
-            && self.tray_manager.is_some() && !tray_quit_requested {
-                // Prevent the window from closing
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                // Minimize the window instead (keep event loop responsive)
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                tracing::info!("Window minimized to tray");
+        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit && !tray_quit_requested {
+            // Prevent the window from closing immediately
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+
+            // Check configured behavior
+            match self.config.window.close_button_behavior {
+                CloseButtonBehavior::Exit => {
+                    // Exit immediately
+                    tracing::info!("Close button: Exit");
+                    self.should_quit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                CloseButtonBehavior::MinimizeToTray => {
+                    // Minimize window (Windows compatible)
+                    if self.tray_manager.is_some() {
+                        tracing::info!("Close button: Minimize window");
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    } else {
+                        // No tray available, just exit
+                        tracing::info!("Close button: No tray, exit");
+                        self.should_quit = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+                CloseButtonBehavior::Ask => {
+                    // Show dialog to ask user
+                    if self.tray_manager.is_some() {
+                        tracing::info!("Close button: Ask user");
+                        self.close_dialog.show_dialog();
+                    } else {
+                        // No tray available, just exit
+                        tracing::info!("Close button: No tray, exit");
+                        self.should_quit = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
             }
+        }
+
+        // Handle close dialog
+        if let Some(result) = self.close_dialog.show(ctx) {
+            match result {
+                CloseDialogResult::Exit => {
+                    tracing::info!("User chose to exit");
+                    if self.close_dialog.should_remember() {
+                        self.config.window.close_button_behavior = CloseButtonBehavior::Exit;
+                        let _ = self.config.save();
+                    }
+                    self.should_quit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                CloseDialogResult::MinimizeToTray => {
+                    tracing::info!("User chose to minimize window");
+                    if self.close_dialog.should_remember() {
+                        self.config.window.close_button_behavior = CloseButtonBehavior::MinimizeToTray;
+                        let _ = self.config.save();
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                CloseDialogResult::Cancel => {
+                    tracing::info!("User cancelled close");
+                    // Just close the dialog, window stays open
+                }
+            }
+        }
 
         // Apply theme on first frame to ensure it takes effect after eframe initialization
         if self.first_frame {
@@ -2223,6 +2291,14 @@ impl eframe::App for LoglineApp {
                                         StatusLevel::Info,
                                     );
                                 }
+                                SettingsAction::CloseButtonBehaviorChanged(behavior) => {
+                                    self.config.window.close_button_behavior = behavior;
+                                    let _ = self.config.save();
+                                    self.status_bar.set_message(
+                                        t::settings_saved(),
+                                        StatusLevel::Info,
+                                    );
+                                }
                                 _ => {}
                             }
                         }
@@ -2232,6 +2308,14 @@ impl eframe::App for LoglineApp {
 
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
+            // If window is hidden, show minimal UI and return early
+            if self.window_hidden {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Application running in background...");
+                });
+                return;
+            }
+
             // Check if split view is active
             if self.tab_manager.is_split() {
                 // Split view mode - show two panes
@@ -2548,7 +2632,11 @@ impl eframe::App for LoglineApp {
 
         // Request repaint for real-time updates only when actively viewing a file
         // Reduced repaint frequency when remote server is running but no file is open
-        if self.tab_manager.any_watching() {
+        if self.window_hidden {
+            // Window is hidden, use low-frequency updates to save resources
+            // but keep responsive enough to handle tray events
+            ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.tab_manager.any_watching() {
             // Actively watching a file, need frequent updates
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if self.remote_server.is_running() {

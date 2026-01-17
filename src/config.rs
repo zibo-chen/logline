@@ -186,6 +186,23 @@ pub struct InlineGrokPattern {
     pub pre_processor: crate::grok_parser::PreProcessor,
 }
 
+/// Close button behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloseButtonBehavior {
+    /// Exit the application
+    Exit,
+    /// Minimize to system tray
+    MinimizeToTray,
+    /// Ask user what to do
+    Ask,
+}
+
+impl Default for CloseButtonBehavior {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
 /// Window configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -200,6 +217,8 @@ pub struct WindowConfig {
     pub y: Option<f32>,
     /// Whether window is maximized
     pub maximized: bool,
+    /// Close button behavior
+    pub close_button_behavior: CloseButtonBehavior,
 }
 
 impl Default for WindowConfig {
@@ -210,6 +229,7 @@ impl Default for WindowConfig {
             x: None,
             y: None,
             maximized: false,
+            close_button_behavior: CloseButtonBehavior::Ask,
         }
     }
 }

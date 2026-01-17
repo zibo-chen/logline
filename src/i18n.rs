@@ -1710,6 +1710,91 @@ impl Translations {
             Language::Chinese => "退出",
         }
     }
+
+    // ============ Close Dialog ============
+    pub fn close_dialog_title() -> &'static str {
+        match current_language() {
+            Language::English => "Close Application",
+            Language::Chinese => "关闭应用",
+        }
+    }
+
+    pub fn close_dialog_message() -> &'static str {
+        match current_language() {
+            Language::English => "What would you like to do?",
+            Language::Chinese => "请选择操作：",
+        }
+    }
+
+    pub fn close_dialog_exit() -> &'static str {
+        match current_language() {
+            Language::English => "Exit Application",
+            Language::Chinese => "退出应用",
+        }
+    }
+
+    pub fn close_dialog_minimize() -> &'static str {
+        match current_language() {
+            Language::English => "Minimize to Tray",
+            Language::Chinese => "缩小到托盘",
+        }
+    }
+
+    pub fn close_dialog_remember() -> &'static str {
+        match current_language() {
+            Language::English => "Remember my choice",
+            Language::Chinese => "记住我的选择",
+        }
+    }
+
+    pub fn close_dialog_cancel() -> &'static str {
+        match current_language() {
+            Language::English => "Cancel",
+            Language::Chinese => "取消",
+        }
+    }
+
+    pub fn close_button_behavior() -> &'static str {
+        match current_language() {
+            Language::English => "Close Button Behavior",
+            Language::Chinese => "关闭按钮操作",
+        }
+    }
+
+    pub fn close_behavior_exit() -> &'static str {
+        match current_language() {
+            Language::English => "Exit",
+            Language::Chinese => "退出",
+        }
+    }
+
+    pub fn close_behavior_minimize() -> &'static str {
+        match current_language() {
+            Language::English => "Minimize to Tray",
+            Language::Chinese => "缩小到托盘",
+        }
+    }
+
+    pub fn close_behavior_ask() -> &'static str {
+        match current_language() {
+            Language::English => "Ask",
+            Language::Chinese => "询问",
+        }
+    }
+
+    pub fn window_settings() -> &'static str {
+        match current_language() {
+            Language::English => "Window",
+            Language::Chinese => "窗口",
+        }
+    }
+
+    pub fn settings_saved() -> &'static str {
+        match current_language() {
+            Language::English => "Settings saved",
+            Language::Chinese => "设置已保存",
+        }
+    }
 }
 
 /// Convenient macro for translations

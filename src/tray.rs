@@ -3,7 +3,7 @@
 //! This module provides system tray functionality, allowing the application
 //! to minimize to the system tray and run in the background.
 
-use crate::i18n::Translations as t;
+use crate::i18n::Translations;
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -57,43 +57,53 @@ impl TrayManager {
         // Create menu with i18n support
         let menu = Menu::new();
 
-        // Window controls section
-        let show_item = MenuItem::new(t::tray_show_window(), true, None);
-        let hide_item = MenuItem::new(t::tray_hide_window(), true, None);
+        // Window control items
+        let show_item = MenuItem::new(Translations::tray_show_window(), true, None);
+        let hide_item = MenuItem::new(Translations::tray_hide_window(), true, None);
 
+        // Separator
+        let separator1 = PredefinedMenuItem::separator();
+
+        // File operations
+        let open_file_item = MenuItem::new(Translations::tray_open_file(), true, None);
+
+        // Separator
+        let separator2 = PredefinedMenuItem::separator();
+
+        // Settings and About
+        let settings_item = MenuItem::new(Translations::tray_settings(), true, None);
+        let about_item = MenuItem::new(Translations::tray_about(), true, None);
+
+        // Separator
+        let separator3 = PredefinedMenuItem::separator();
+
+        // Quit
+        let quit_item = MenuItem::new(Translations::tray_quit(), true, None);
+
+        // Store IDs for event handling
         let show_item_id = show_item.id().clone();
         let hide_item_id = hide_item.id().clone();
+        let open_file_item_id = open_file_item.id().clone();
+        let settings_item_id = settings_item.id().clone();
+        let about_item_id = about_item.id().clone();
+        let quit_item_id = quit_item.id().clone();
 
+        // Build menu
         menu.append(&show_item)?;
         menu.append(&hide_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
-        // Actions section
-        let open_file_item = MenuItem::new(t::tray_open_file(), true, None);
-        let open_file_id = open_file_item.id().clone();
+        menu.append(&separator1)?;
         menu.append(&open_file_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
-        // Settings and About section
-        let settings_item = MenuItem::new(t::tray_settings(), true, None);
-        let settings_id = settings_item.id().clone();
+        menu.append(&separator2)?;
         menu.append(&settings_item)?;
-
-        let about_item = MenuItem::new(t::tray_about(), true, None);
-        let about_id = about_item.id().clone();
         menu.append(&about_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
-        // Exit
-        let quit_item = MenuItem::new(t::tray_quit(), true, None);
-        let quit_item_id = quit_item.id().clone();
+        menu.append(&separator3)?;
         menu.append(&quit_item)?;
 
         // Create tray icon
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false) // Left click will not show menu
-            .with_tooltip(t::tray_tooltip())
+            .with_tooltip(Translations::tray_tooltip())
             .with_icon(icon)
             .build()?;
 
@@ -107,9 +117,9 @@ impl TrayManager {
         // Clone IDs for the background thread
         let show_id = show_item_id.clone();
         let hide_id = hide_item_id.clone();
-        let open_file_id_thread = open_file_id.clone();
-        let settings_id_thread = settings_id.clone();
-        let about_id_thread = about_id.clone();
+        let open_file_id = open_file_item_id.clone();
+        let settings_id = settings_item_id.clone();
+        let about_id = about_item_id.clone();
         let quit_id = quit_item_id.clone();
 
         // Spawn a dedicated thread to monitor tray events
@@ -144,22 +154,22 @@ impl TrayManager {
                 if let Ok(event) = menu_receiver.try_recv() {
                     tracing::debug!("Menu event received: {:?}", event);
                     if event.id == show_id {
-                        tracing::info!("Show menu item clicked");
+                        tracing::info!("Show window menu item clicked");
                         let _ = event_tx.send(TrayEvent::ShowWindow);
                         ctx.request_repaint();
                     } else if event.id == hide_id {
-                        tracing::info!("Hide menu item clicked");
+                        tracing::info!("Hide window menu item clicked");
                         let _ = event_tx.send(TrayEvent::HideWindow);
                         ctx.request_repaint();
-                    } else if event.id == open_file_id_thread {
+                    } else if event.id == open_file_id {
                         tracing::info!("Open file menu item clicked");
                         let _ = event_tx.send(TrayEvent::OpenFile);
                         ctx.request_repaint();
-                    } else if event.id == settings_id_thread {
+                    } else if event.id == settings_id {
                         tracing::info!("Settings menu item clicked");
                         let _ = event_tx.send(TrayEvent::Settings);
                         ctx.request_repaint();
-                    } else if event.id == about_id_thread {
+                    } else if event.id == about_id {
                         tracing::info!("About menu item clicked");
                         let _ = event_tx.send(TrayEvent::About);
                         ctx.request_repaint();

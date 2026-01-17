@@ -211,7 +211,7 @@ impl ActivityBar {
             ui.visuals().text_color().gamma_multiply(0.8)
         };
 
-        let mut bg_color = if active {
+        let bg_color = if active {
             ui.visuals().selection.bg_fill.linear_multiply(0.5)
         } else {
             Color32::TRANSPARENT
@@ -220,7 +220,7 @@ impl ActivityBar {
         let response = ui.add(
             egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
                 .fill(bg_color)
-                .rounding(6.0)
+                .corner_radius(6.0)
                 .min_size(Vec2::new(40.0, 40.0)),
         );
 

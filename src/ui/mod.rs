@@ -3,6 +3,7 @@
 pub mod activity_bar;
 pub mod advanced_filters_panel;
 pub mod bookmarks_panel;
+pub mod close_dialog;
 pub mod explorer_panel;
 pub mod file_picker_dialog;
 pub mod filter_panel;

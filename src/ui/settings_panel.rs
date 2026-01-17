@@ -2,7 +2,7 @@
 //!
 //! Provides UI for configuring server port, theme, language, display settings and more.
 
-use crate::config::DisplayConfig;
+use crate::config::{CloseButtonBehavior, DisplayConfig};
 use crate::i18n::{Language, Translations as t};
 use egui::{RichText, Ui};
 
@@ -24,6 +24,8 @@ pub struct SettingsPanel {
     pub mcp_enabled: bool,
     /// MCP server port
     pub mcp_port: String,
+    /// Close button behavior
+    pub close_button_behavior: CloseButtonBehavior,
 }
 
 impl Default for SettingsPanel {
@@ -50,6 +52,7 @@ impl SettingsPanel {
             display_config: DisplayConfig::default(),
             mcp_enabled: false,
             mcp_port: "12600".to_string(),
+            close_button_behavior: CloseButtonBehavior::Ask,
         }
     }
 
@@ -165,6 +168,56 @@ impl SettingsPanel {
                             {
                                 action = SettingsAction::LanguageChanged(self.language);
                             }
+                        }
+                    });
+            });
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // Window settings
+            ui.label(RichText::new(format!("🪟 {}", t::window_settings())).strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", t::close_button_behavior()));
+                egui::ComboBox::from_id_salt("close_behavior_selector")
+                    .selected_text(match self.close_button_behavior {
+                        CloseButtonBehavior::Exit => t::close_behavior_exit(),
+                        CloseButtonBehavior::MinimizeToTray => t::close_behavior_minimize(),
+                        CloseButtonBehavior::Ask => t::close_behavior_ask(),
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_value(
+                                &mut self.close_button_behavior,
+                                CloseButtonBehavior::Exit,
+                                t::close_behavior_exit(),
+                            )
+                            .clicked()
+                        {
+                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut self.close_button_behavior,
+                                CloseButtonBehavior::MinimizeToTray,
+                                t::close_behavior_minimize(),
+                            )
+                            .clicked()
+                        {
+                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut self.close_button_behavior,
+                                CloseButtonBehavior::Ask,
+                                t::close_behavior_ask(),
+                            )
+                            .clicked()
+                        {
+                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
                         }
                     });
             });
@@ -294,4 +347,5 @@ pub enum SettingsAction {
     DisplayConfigChanged,
     McpEnabledChanged(bool),
     McpPortChanged,
+    CloseButtonBehaviorChanged(CloseButtonBehavior),
 }
