@@ -9,7 +9,6 @@ use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
-use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
 use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
@@ -49,8 +48,7 @@ pub struct LoglineApp {
 
     /// Search bar
     search_bar: SearchBar,
-    /// Application title bar with search
-    app_titlebar: AppTitleBar,
+
     /// Filter panel
     filter_panel: FilterPanel,
     /// Status bar
@@ -211,7 +209,6 @@ impl LoglineApp {
                 manager
             },
             search_bar: SearchBar::new(),
-            app_titlebar: AppTitleBar::new(),
             filter_panel: FilterPanel::new(),
             status_bar: StatusBar::new(),
             toolbar_state: ToolbarState {
@@ -732,7 +729,7 @@ impl LoglineApp {
                 });
             }
             self.status_bar
-                .set_message("MCP服务已停止", StatusLevel::Info);
+                .set_message(t::mcp_server_stopped(), StatusLevel::Info);
             tracing::info!("MCP server stopped");
         }
     }
@@ -1204,7 +1201,7 @@ impl eframe::App for LoglineApp {
         // Initialize system tray after event loop has started (macOS requirement)
         if !self.tray_initialized {
             self.tray_initialized = true;
-            match TrayManager::new() {
+            match TrayManager::new(ctx.clone()) {
                 Ok(tray) => {
                     tracing::info!("System tray initialized");
                     self.tray_manager = Some(tray);
@@ -1218,14 +1215,17 @@ impl eframe::App for LoglineApp {
         // Handle system tray events
         if let Some(ref tray) = self.tray_manager {
             if let Some(event) = tray.poll_events() {
+                tracing::info!("Tray event received: {:?}", event);
                 match event {
                     TrayEvent::ShowWindow => {
                         // Restore the window
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                     TrayEvent::Quit => {
                         // Actually quit the application
+                        tracing::info!("Quit event triggered, setting should_quit=true");
                         self.should_quit = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -1234,12 +1234,18 @@ impl eframe::App for LoglineApp {
         }
 
         // Handle window close button - minimize to tray instead of quitting
+        let tray_quit_requested = self
+            .tray_manager
+            .as_ref()
+            .map(|tray| tray.is_quit_requested())
+            .unwrap_or(false);
+
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit
-            && self.tray_manager.is_some() {
+            && self.tray_manager.is_some() && !tray_quit_requested {
                 // Prevent the window from closing
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                // Hide the window instead
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                // Minimize the window instead (keep event loop responsive)
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 tracing::info!("Window minimized to tray");
             }
 
@@ -1623,7 +1629,7 @@ impl eframe::App for LoglineApp {
                         if self.remote_server.is_running() {
                             self.remote_server.stop();
                             self.status_bar
-                                .set_message("远程服务已停止", StatusLevel::Info);
+                                .set_message(t::remote_server_stopped(), StatusLevel::Info);
                         } else {
                             // Update port from settings before starting
                             let port = self.settings_panel.port();
@@ -1740,7 +1746,7 @@ impl eframe::App for LoglineApp {
                                             );
                                         } else {
                                             self.status_bar.set_message(
-                                                "已在访达中显示".to_string(),
+                                                t::file_shown_in_finder().to_string(),
                                                 StatusLevel::Info,
                                             );
                                         }
@@ -1758,7 +1764,7 @@ impl eframe::App for LoglineApp {
                                             );
                                         } else {
                                             self.status_bar.set_message(
-                                                "已在资源管理器中显示".to_string(),
+                                                t::file_shown_in_explorer().to_string(),
                                                 StatusLevel::Info,
                                             );
                                         }
@@ -1777,7 +1783,7 @@ impl eframe::App for LoglineApp {
                                                 );
                                             } else {
                                                 self.status_bar.set_message(
-                                                    "已在文件管理器中显示".to_string(),
+                                                    t::file_shown_in_file_manager().to_string(),
                                                     StatusLevel::Info,
                                                 );
                                             }
@@ -1794,7 +1800,7 @@ impl eframe::App for LoglineApp {
                                         );
                                     } else {
                                         self.status_bar.set_message(
-                                            "已从最近文件中移除".to_string(),
+                                            t::removed_from_recent_files().to_string(),
                                             StatusLevel::Info,
                                         );
                                     }
@@ -1809,7 +1815,7 @@ impl eframe::App for LoglineApp {
                                         );
                                     } else {
                                         self.status_bar.set_message(
-                                            "已清空最近文件列表".to_string(),
+                                            t::recent_files_cleared().to_string(),
                                             StatusLevel::Info,
                                         );
                                     }
@@ -2033,7 +2039,7 @@ impl eframe::App for LoglineApp {
                                                 state.update_filter();
                                             }
                                             self.status_bar
-                                                .set_message("所有书签已清除", StatusLevel::Info);
+                                                .set_message(t::all_bookmarks_cleared(), StatusLevel::Info);
                                         }
                                         // Auto-save bookmarks
                                         if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
@@ -2067,7 +2073,7 @@ impl eframe::App for LoglineApp {
                                     let _ = self.config.save();
                                     // Port change will take effect on next server restart
                                     self.status_bar.set_message(
-                                        "端口变更将在重启服务后生效",
+                                        t::port_change_requires_restart(),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -2103,7 +2109,7 @@ impl eframe::App for LoglineApp {
                                     self.config.mcp.port = self.settings_panel.mcp_port_number();
                                     let _ = self.config.save();
                                     self.status_bar.set_message(
-                                        "MCP端口变更将在重启服务后生效",
+                                        t::mcp_port_change_requires_restart(),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -2439,8 +2445,9 @@ impl eframe::App for LoglineApp {
             // Server is running but no active file, less frequent updates
             ctx.request_repaint_after(Duration::from_millis(200));
         } else if self.tray_manager.is_some() {
-            // Tray is active, need periodic repaint to handle tray events
-            ctx.request_repaint_after(Duration::from_millis(500));
+            // Tray is active - the background thread will trigger repaint when events occur
+            // Keep a reasonable fallback interval for other periodic tasks
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 

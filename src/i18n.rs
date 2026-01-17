@@ -1112,6 +1112,7 @@ impl Translations {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn reveal_in_finder() -> &'static str {
         match current_language() {
             Language::English => "Reveal in Finder",
@@ -1524,10 +1525,90 @@ impl Translations {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn finder_open_failed() -> &'static str {
         match current_language() {
             Language::English => "Failed to open Finder",
             Language::Chinese => "打开访达失败",
+        }
+    }
+
+    pub fn file_manager_open_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open file manager",
+            Language::Chinese => "打开文件管理器失败",
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn file_shown_in_finder() -> &'static str {
+        match current_language() {
+            Language::English => "Shown in Finder",
+            Language::Chinese => "已在访达中显示",
+        }
+    }
+
+    pub fn file_shown_in_explorer() -> &'static str {
+        match current_language() {
+            Language::English => "Shown in Explorer",
+            Language::Chinese => "已在资源管理器中显示",
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn file_shown_in_file_manager() -> &'static str {
+        match current_language() {
+            Language::English => "Shown in file manager",
+            Language::Chinese => "已在文件管理器中显示",
+        }
+    }
+
+    pub fn removed_from_recent_files() -> &'static str {
+        match current_language() {
+            Language::English => "Removed from recent files",
+            Language::Chinese => "已从最近文件中移除",
+        }
+    }
+
+    pub fn recent_files_cleared() -> &'static str {
+        match current_language() {
+            Language::English => "Recent files cleared",
+            Language::Chinese => "已清空最近文件列表",
+        }
+    }
+
+    pub fn all_bookmarks_cleared() -> &'static str {
+        match current_language() {
+            Language::English => "All bookmarks cleared",
+            Language::Chinese => "所有书签已清除",
+        }
+    }
+
+    pub fn port_change_requires_restart() -> &'static str {
+        match current_language() {
+            Language::English => "Port change will take effect after service restart",
+            Language::Chinese => "端口变更将在重启服务后生效",
+        }
+    }
+
+    pub fn mcp_port_change_requires_restart() -> &'static str {
+        match current_language() {
+            Language::English => "MCP port change will take effect after service restart",
+            Language::Chinese => "MCP端口变更将在重启服务后生效",
+        }
+    }
+
+    pub fn mcp_server_stopped() -> &'static str {
+        match current_language() {
+            Language::English => "MCP server stopped",
+            Language::Chinese => "MCP服务已停止",
+        }
+    }
+
+    pub fn remote_server_stopped() -> &'static str {
+        match current_language() {
+            Language::English => "Remote server stopped",
+            Language::Chinese => "远程服务已停止",
         }
     }
 
@@ -1556,13 +1637,6 @@ impl Translations {
         match current_language() {
             Language::English => "Failed to start MCP server",
             Language::Chinese => "MCP服务启动失败",
-        }
-    }
-
-    pub fn search_placeholder_hint() -> &'static str {
-        match current_language() {
-            Language::English => "Search...",
-            Language::Chinese => "搜索...",
         }
     }
 
