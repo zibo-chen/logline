@@ -1642,7 +1642,18 @@ impl eframe::App for LoglineApp {
         egui::SidePanel::left("activity_bar")
             .exact_width(48.0)
             .resizable(false)
+            .frame(egui::Frame::new()
+                .fill(ctx.style().visuals.extreme_bg_color)
+                .inner_margin(egui::Margin::same(0))
+            )
             .show(ctx, |ui| {
+                // Draw subtle right border
+                let rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [rect.right_top(), rect.right_bottom()],
+                    egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color.linear_multiply(0.3)),
+                );
+
                 // Update server status in activity bar
                 self.activity_bar.server_running = self.remote_server.is_running();
                 self.activity_bar.server_port = self.settings_panel.port();

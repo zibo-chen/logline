@@ -208,11 +208,11 @@ impl ActivityBar {
         let text_color = if active {
             ui.visuals().strong_text_color()
         } else {
-            ui.visuals().text_color()
+            ui.visuals().text_color().gamma_multiply(0.8)
         };
 
-        let bg_color = if active {
-            ui.visuals().selection.bg_fill.linear_multiply(0.3)
+        let mut bg_color = if active {
+            ui.visuals().selection.bg_fill.linear_multiply(0.5)
         } else {
             Color32::TRANSPARENT
         };
@@ -220,8 +220,18 @@ impl ActivityBar {
         let response = ui.add(
             egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
                 .fill(bg_color)
+                .rounding(6.0)
                 .min_size(Vec2::new(40.0, 40.0)),
         );
+
+        // Hover effect
+        if response.hovered() && !active {
+            ui.painter().rect_filled(
+                response.rect,
+                6.0,
+                ui.visuals().widgets.hovered.bg_fill.linear_multiply(0.3),
+            );
+        }
 
         let clicked = response.clicked();
         response.on_hover_text(tooltip);
