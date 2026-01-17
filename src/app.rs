@@ -9,6 +9,7 @@ use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
+use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::close_dialog::{CloseDialog, CloseDialogResult};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
@@ -49,6 +50,8 @@ pub struct LoglineApp {
 
     /// Search bar
     search_bar: SearchBar,
+    /// Application title bar with search
+    app_titlebar: AppTitleBar,
 
     /// Filter panel
     filter_panel: FilterPanel,
@@ -217,6 +220,7 @@ impl LoglineApp {
                 manager
             },
             search_bar: SearchBar::new(),
+            app_titlebar: AppTitleBar::new(),
             filter_panel: FilterPanel::new(),
             status_bar: StatusBar::new(),
             toolbar_state: ToolbarState {
