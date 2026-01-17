@@ -12,8 +12,8 @@ pub struct SettingsPanel {
     pub server_port: String,
     /// Dark theme enabled
     pub dark_theme: bool,
-    /// Auto-start server
-    pub auto_start_server: bool,
+    /// Enable remote service
+    pub enable_remote_service: bool,
     /// Cache directory
     pub cache_dir: String,
     /// Current language
@@ -44,7 +44,7 @@ impl SettingsPanel {
         Self {
             server_port: "12500".to_string(),
             dark_theme: true,
-            auto_start_server: false,
+            enable_remote_service: false,
             cache_dir,
             language: Language::default(),
             display_config: DisplayConfig::default(),
@@ -188,10 +188,10 @@ impl SettingsPanel {
             ui.add_space(4.0);
 
             if ui
-                .checkbox(&mut self.auto_start_server, t::auto_start_server())
+                .checkbox(&mut self.enable_remote_service, t::enable_remote_service())
                 .changed()
             {
-                action = SettingsAction::AutoStartChanged;
+                action = SettingsAction::RemoteServiceEnabledChanged;
             }
 
             ui.add_space(4.0);
@@ -219,7 +219,7 @@ impl SettingsPanel {
             ui.add_space(4.0);
 
             if ui
-                .checkbox(&mut self.mcp_enabled, t::enable_mcp())
+                .checkbox(&mut self.mcp_enabled, t::enable_mcp_service())
                 .changed()
             {
                 action = SettingsAction::McpEnabledChanged(self.mcp_enabled);
@@ -287,7 +287,7 @@ impl SettingsPanel {
 pub enum SettingsAction {
     None,
     PortChanged,
-    AutoStartChanged,
+    RemoteServiceEnabledChanged,
     ThemeChanged(bool),
     BrowseCacheDir,
     LanguageChanged(Language),

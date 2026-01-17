@@ -28,6 +28,10 @@ pub struct ActivityBar {
     pub server_port: u16,
     /// Number of connected agents
     pub connected_agents: usize,
+    /// MCP server running status
+    pub mcp_running: bool,
+    /// MCP server port
+    pub mcp_port: u16,
 }
 
 impl Default for ActivityBar {
@@ -44,6 +48,8 @@ impl ActivityBar {
             server_running: false,
             server_port: 12500,
             connected_agents: 0,
+            mcp_running: false,
+            mcp_port: 12600,
         }
     }
 
@@ -130,8 +136,8 @@ impl ActivityBar {
                 }
             }
 
-            // Spacer to push status to bottom
-            ui.add_space(ui.available_height() - 60.0);
+            // Spacer to push status indicators to bottom
+            ui.add_space(ui.available_height() - 120.0);
 
             // Server status indicator
             let (status_icon, status_color, tooltip) = if self.server_running {
@@ -165,6 +171,31 @@ impl ActivityBar {
             }
 
             response.on_hover_text(tooltip);
+
+            ui.add_space(4.0);
+
+            // MCP Server status indicator
+            let (mcp_icon, mcp_color, mcp_tooltip) = if self.mcp_running {
+                (
+                    "✨",
+                    Color32::from_rgb(50, 205, 50),
+                    t::mcp_running().replace("{}", &self.mcp_port.to_string()),
+                )
+            } else {
+                ("✨", Color32::GRAY, t::mcp_stopped().to_string())
+            };
+
+            let mcp_response = ui.add(
+                egui::Button::new(RichText::new(mcp_icon).size(20.0).color(mcp_color))
+                    .frame(false)
+                    .min_size(Vec2::new(32.0, 32.0)),
+            );
+
+            if mcp_response.clicked() {
+                action = ActivityBarAction::ToggleMcp;
+            }
+
+            mcp_response.on_hover_text(mcp_tooltip);
 
             ui.add_space(4.0);
         });
@@ -205,4 +236,5 @@ pub enum ActivityBarAction {
     SwitchView(ActivityView),
     TogglePanel,
     ToggleServer,
+    ToggleMcp,
 }

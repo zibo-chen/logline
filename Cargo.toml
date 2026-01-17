@@ -12,7 +12,7 @@ license = "MIT"
 # GUI framework
 eframe = "0.33"
 egui = "0.33"
-egui_extras = "0.33"
+egui_extras = { version = "0.33", features = ["image"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -68,6 +68,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Custom titlebar support
 egui-desktop = "0.2"
+
+# Image loaders for egui (required for egui-desktop SVG assets)
+resvg = "0.45"
 
 # Network interface information (cross-platform)
 if-addrs = "0.13"

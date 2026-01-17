@@ -310,15 +310,15 @@ impl Default for McpServerConfig {
 pub struct RemoteServerConfig {
     /// Port for remote log server
     pub port: u16,
-    /// Whether to auto-start the server on application launch
-    pub auto_start: bool,
+    /// Whether remote server is enabled
+    pub enabled: bool,
 }
 
 impl Default for RemoteServerConfig {
     fn default() -> Self {
         Self {
             port: 12500,
-            auto_start: false,
+            enabled: false,
         }
     }
 }

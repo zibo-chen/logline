@@ -138,8 +138,8 @@ impl LoglineApp {
         };
         let mut remote_server = RemoteServer::new(server_config);
 
-        // Auto-start remote server if configured
-        if config.remote_server.auto_start {
+        // Auto-start remote server if enabled
+        if config.remote_server.enabled {
             if let Err(e) = remote_server.start() {
                 tracing::error!("Failed to auto-start remote server: {}", e);
             }
@@ -153,7 +153,7 @@ impl LoglineApp {
         settings_panel.mcp_enabled = config.mcp.enabled;
         settings_panel.mcp_port = config.mcp.port.to_string();
         settings_panel.server_port = config.remote_server.port.to_string();
-        settings_panel.auto_start_server = config.remote_server.auto_start;
+        settings_panel.enable_remote_service = config.remote_server.enabled;
 
         // Initialize MCP server if enabled
         let (mcp_server, tokio_runtime) = {
@@ -265,6 +265,10 @@ impl LoglineApp {
             title_bar: TitleBar::new(
                 TitleBarOptions::new()
                     .with_title("Logline")
+                    .with_app_icon(
+                        include_bytes!("../res/icon.png"),
+                        "bytes://icon.png"
+                    )
                     .with_theme_mode(if config.theme == Theme::Dark {
                         ThemeMode::Dark
                     } else {
@@ -1223,6 +1227,37 @@ impl eframe::App for LoglineApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
+                    TrayEvent::HideWindow => {
+                        // Minimize the window to tray
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        tracing::info!("Window minimized to tray via menu");
+                    }
+                    TrayEvent::OpenFile => {
+                        // Show file picker dialog
+                        self.file_picker_dialog.show_dialog();
+                        // Also restore window if minimized
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayEvent::Settings => {
+                        // Open settings panel
+                        self.activity_bar.active_view = crate::ui::activity_bar::ActivityView::Settings;
+                        self.sidebar_visible = true;
+                        // Also restore window if minimized
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayEvent::About => {
+                        // Show about dialog (open settings panel)
+                        self.activity_bar.active_view = crate::ui::activity_bar::ActivityView::Settings;
+                        self.sidebar_visible = true;
+                        // Also restore window if minimized
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
                     TrayEvent::Quit => {
                         // Actually quit the application
                         tracing::info!("Quit event triggered, setting should_quit=true");
@@ -1614,6 +1649,10 @@ impl eframe::App for LoglineApp {
                     .iter()
                     .filter(|s| s.status == crate::remote_server::ConnectionStatus::Online)
                     .count();
+                
+                // Update MCP server status
+                self.activity_bar.mcp_running = self.mcp_server.is_some();
+                self.activity_bar.mcp_port = self.settings_panel.mcp_port_number();
 
                 match self.activity_bar.show(ui) {
                     ActivityBarAction::SwitchView(view) => {
@@ -1628,6 +1667,9 @@ impl eframe::App for LoglineApp {
                     ActivityBarAction::ToggleServer => {
                         if self.remote_server.is_running() {
                             self.remote_server.stop();
+                            self.config.remote_server.enabled = false;
+                            self.settings_panel.enable_remote_service = false;
+                            let _ = self.config.save();
                             self.status_bar
                                 .set_message(t::remote_server_stopped(), StatusLevel::Info);
                         } else {
@@ -1637,6 +1679,9 @@ impl eframe::App for LoglineApp {
 
                             match self.remote_server.start() {
                                 Ok(()) => {
+                                    self.config.remote_server.enabled = true;
+                                    self.settings_panel.enable_remote_service = true;
+                                    let _ = self.config.save();
                                     let msg = format!("{}: {}", t::server_started(), port);
                                     self.status_bar.set_message(
                                         msg,
@@ -1650,6 +1695,23 @@ impl eframe::App for LoglineApp {
                                         StatusLevel::Error,
                                     );
                                 }
+                            }
+                        }
+                    }
+                    ActivityBarAction::ToggleMcp => {
+                        if self.mcp_server.is_some() {
+                            // Stop MCP server
+                            self.stop_mcp_server();
+                            self.config.mcp.enabled = false;
+                            self.settings_panel.mcp_enabled = false;
+                            let _ = self.config.save();
+                        } else {
+                            // Start MCP server
+                            self.start_mcp_server();
+                            if self.mcp_server.is_some() {
+                                self.config.mcp.enabled = true;
+                                self.settings_panel.mcp_enabled = true;
+                                let _ = self.config.save();
                             }
                         }
                     }
@@ -2077,10 +2139,43 @@ impl eframe::App for LoglineApp {
                                         StatusLevel::Info,
                                     );
                                 }
-                                SettingsAction::AutoStartChanged => {
-                                    self.config.remote_server.auto_start =
-                                        self.settings_panel.auto_start_server;
+                                SettingsAction::RemoteServiceEnabledChanged => {
+                                    self.config.remote_server.enabled =
+                                        self.settings_panel.enable_remote_service;
                                     let _ = self.config.save();
+
+                                    // Start or stop remote server based on enabled state
+                                    if self.settings_panel.enable_remote_service {
+                                        if !self.remote_server.is_running() {
+                                            let port = self.settings_panel.port();
+                                            self.remote_server.set_port(port);
+                                            match self.remote_server.start() {
+                                                Ok(()) => {
+                                                    let msg = format!("{}: {}", t::server_started(), port);
+                                                    self.status_bar.set_message(
+                                                        msg,
+                                                        StatusLevel::Success,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    let msg = format!("{}: {}", t::server_start_failed(), e);
+                                                    self.status_bar.set_message(
+                                                        msg,
+                                                        StatusLevel::Error,
+                                                    );
+                                                    self.config.remote_server.enabled = false;
+                                                    self.settings_panel.enable_remote_service = false;
+                                                    let _ = self.config.save();
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        if self.remote_server.is_running() {
+                                            self.remote_server.stop();
+                                            self.status_bar
+                                                .set_message(t::remote_server_stopped(), StatusLevel::Info);
+                                        }
+                                    }
                                 }
                                 SettingsAction::LanguageChanged(lang) => {
                                     set_language(lang);

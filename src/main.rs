@@ -35,16 +35,21 @@ fn main() -> eframe::Result<()> {
 
     // Load icon for window
     let icon_bytes = include_bytes!("../res/icon.png");
-    let icon = if let Ok(icon_image) = image::load_from_memory(icon_bytes) {
-        let icon_rgba = icon_image.to_rgba8();
-        let (width, height) = icon_rgba.dimensions();
-        egui::IconData {
-            rgba: icon_rgba.into_raw(),
-            width,
-            height,
+    let icon = match image::load_from_memory(icon_bytes) {
+        Ok(icon_image) => {
+            let icon_rgba = icon_image.to_rgba8();
+            let (width, height) = icon_rgba.dimensions();
+            tracing::info!("Successfully loaded window icon: {}x{}", width, height);
+            egui::IconData {
+                rgba: icon_rgba.into_raw(),
+                width,
+                height,
+            }
         }
-    } else {
-        egui::IconData::default()
+        Err(e) => {
+            tracing::error!("Failed to load window icon: {}", e);
+            egui::IconData::default()
+        }
     };
 
     // Configure native options with platform-specific titlebar settings
@@ -52,8 +57,7 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1200.0, 800.0])
         .with_min_inner_size([800.0, 600.0])
         .with_title("Logline - Log Viewer")
-        .with_taskbar(false) // Don't show in Dock/taskbar when window is hidden
-        .with_icon(icon);
+        .with_icon(icon.clone());
 
     // Platform-specific titlebar configuration
     #[cfg(target_os = "macos")]
@@ -63,13 +67,16 @@ fn main() -> eframe::Result<()> {
         viewport_builder = viewport_builder
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false);
+            .with_title_shown(false)
+            .with_taskbar(false); // Don't show in Dock when window is hidden
     }
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         // Windows/Linux: Disable decorations to use custom titlebar
-        viewport_builder = viewport_builder.with_decorations(false);
+        // Keep taskbar icon visible on Windows
+        viewport_builder = viewport_builder.with_decorations(false).with_taskbar(true);
+        // Ensure taskbar icon is shown on Windows
     }
 
     let native_options = eframe::NativeOptions {
@@ -84,6 +91,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Logline",
         native_options,
-        Box::new(move |cc| Ok(Box::new(LoglineApp::new(cc)))),
+        Box::new(move |cc| {
+            // Install image loaders for egui (required for egui-desktop SVG assets)
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+
+            Ok(Box::new(LoglineApp::new(cc)))
+        }),
     )
 }

@@ -573,10 +573,10 @@ impl Translations {
         }
     }
 
-    pub fn auto_start_server() -> &'static str {
+    pub fn enable_remote_service() -> &'static str {
         match current_language() {
-            Language::English => "Auto-start server on launch",
-            Language::Chinese => "启动时自动开启服务",
+            Language::English => "Enable Remote Service",
+            Language::Chinese => "启用远程服务",
         }
     }
 
@@ -587,9 +587,9 @@ impl Translations {
         }
     }
 
-    pub fn enable_mcp() -> &'static str {
+    pub fn enable_mcp_service() -> &'static str {
         match current_language() {
-            Language::English => "Enable MCP server",
+            Language::English => "Enable MCP Service",
             Language::Chinese => "启用MCP服务",
         }
     }
@@ -1640,10 +1640,74 @@ impl Translations {
         }
     }
 
+    pub fn mcp_running() -> &'static str {
+        match current_language() {
+            Language::English => "MCP Service: Running on port {}",
+            Language::Chinese => "MCP服务: 运行中 端口 {}",
+        }
+    }
+
+    pub fn mcp_stopped() -> &'static str {
+        match current_language() {
+            Language::English => "MCP Service: Stopped",
+            Language::Chinese => "MCP服务: 已停止",
+        }
+    }
+
     pub fn open_file_button() -> &'static str {
         match current_language() {
             Language::English => "📁 Open File",
             Language::Chinese => "📁 打开文件",
+        }
+    }
+
+    // ============ System Tray ============
+    pub fn tray_tooltip() -> &'static str {
+        match current_language() {
+            Language::English => "Logline - Log Viewer",
+            Language::Chinese => "Logline - 日志查看器",
+        }
+    }
+
+    pub fn tray_show_window() -> &'static str {
+        match current_language() {
+            Language::English => "Show Window",
+            Language::Chinese => "显示窗口",
+        }
+    }
+
+    pub fn tray_hide_window() -> &'static str {
+        match current_language() {
+            Language::English => "Hide Window",
+            Language::Chinese => "隐藏窗口",
+        }
+    }
+
+    pub fn tray_open_file() -> &'static str {
+        match current_language() {
+            Language::English => "Open File...",
+            Language::Chinese => "打开文件...",
+        }
+    }
+
+    pub fn tray_settings() -> &'static str {
+        match current_language() {
+            Language::English => "Settings",
+            Language::Chinese => "设置",
+        }
+    }
+
+    pub fn tray_about() -> &'static str {
+        match current_language() {
+            Language::English => "About",
+            Language::Chinese => "关于",
+        }
+    }
+
+    pub fn tray_quit() -> &'static str {
+        match current_language() {
+            Language::English => "Quit",
+            Language::Chinese => "退出",
         }
     }
 }
