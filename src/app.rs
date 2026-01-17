@@ -30,7 +30,7 @@ use eframe::egui;
 use egui::RichText;
 use egui_desktop::{TitleBar, TitleBarOptions, ThemeMode};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use egui_desktop::render_resize_handles;
+use egui_desktop::{apply_rounded_corners, render_resize_handles};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -1169,7 +1169,11 @@ impl LoglineApp {
 }
 
 impl eframe::App for LoglineApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Apply native rounded corners on Windows (only called once)
+        #[cfg(target_os = "windows")]
+        apply_rounded_corners(frame);
+        
         // Handle file drag-and-drop
         ctx.input(|i| {
             if !i.raw.dropped_files.is_empty() {
