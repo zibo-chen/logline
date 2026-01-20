@@ -1374,11 +1374,21 @@ impl eframe::App for LoglineApp {
         self.tab_manager.process_all_reader_messages();
         
         // Check if any tab needs to load more data (lazy loading)
-        // This is triggered when user scrolls near the top of the loaded data
+        // This is triggered when user scrolls near the top of the loaded data (in normal mode)
+        // or near the bottom of the loaded data (in reverse mode)
         for state in self.tab_manager.states.values_mut() {
             let total_rows = state.buffer.len();
             let visible_range = state.main_view.get_visible_range(total_rows);
-            if state.buffer.should_load_more(visible_range.start) {
+            let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+            
+            // In reverse mode, check if near the end instead of the start
+            let check_position = if reverse_order {
+                visible_range.end
+            } else {
+                visible_range.start
+            };
+            
+            if state.buffer.should_load_more(check_position) {
                 state.request_load_more();
             }
         }
@@ -1418,17 +1428,47 @@ impl eframe::App for LoglineApp {
                     continue;
                 }
                 
-                // Get visible range for on-demand parsing
-                let visible_range = state.main_view.get_visible_range(total_len);
+                // Determine the display row count and index mapping
+                let (display_row_count, filtered_indices) = if state.filter_active {
+                    (state.filtered_indices.len(), Some(state.filtered_indices.as_slice()))
+                } else {
+                    (total_len, None)
+                };
+                
+                if display_row_count == 0 {
+                    continue;
+                }
+                
+                // Get visible range for on-demand parsing (based on displayed rows)
+                let visible_range = state.main_view.get_visible_range(display_row_count);
                 let mut parsed_count = 0;
+                let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
                 
                 // Priority 1: Parse visible entries first
-                for i in visible_range.clone() {
+                for display_row in visible_range.clone() {
                     if parsed_count >= MAX_PARSE_PER_FRAME {
                         break;
                     }
                     
-                    if let Some(entry) = state.buffer.get_mut(i) {
+                    // Convert display_row to logical_row (considering reverse order)
+                    let logical_row = if reverse_order {
+                        display_row_count.saturating_sub(1).saturating_sub(display_row)
+                    } else {
+                        display_row
+                    };
+                    
+                    // Convert logical_row to buffer_idx (considering filtering)
+                    let buffer_idx = if let Some(indices) = filtered_indices {
+                        indices.get(logical_row).copied()
+                    } else {
+                        Some(logical_row)
+                    };
+                    
+                    let Some(buffer_idx) = buffer_idx else {
+                        continue;
+                    };
+                    
+                    if let Some(entry) = state.buffer.get_mut(buffer_idx) {
                         if entry.grok_fields.is_none() {
                             // Use parser.parse_with_format() to support mixed patterns and formatting
                             if let Some((fields, formatted)) =
@@ -1529,14 +1569,17 @@ impl eframe::App for LoglineApp {
             .show(ctx, |ui| {
             let filter_config = self.tab_manager.get_active_state_mut()
                 .map(|state| &mut state.filter.filter);
-            let toolbar_action = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
+            let (toolbar_action, filter_changed) = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
             if let Some(a) = self.handle_toolbar_action(toolbar_action) {
                 action = Some(a);
             }
             
             // Update filter if changed
-            if let Some(state) = self.tab_manager.get_active_state_mut() {
-                state.update_filter();
+            if filter_changed {
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.filter.mark_dirty();
+                    state.update_filter();
+                }
             }
         });
 
