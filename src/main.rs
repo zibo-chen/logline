@@ -5,6 +5,7 @@
 //! A cross-platform log viewer application built with Rust and egui,
 //! designed for efficient real-time log monitoring and analysis.
 
+mod android_logcat;
 mod app;
 mod bookmarks;
 mod config;

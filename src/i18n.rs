@@ -1533,6 +1533,7 @@ impl Translations {
         }
     }
 
+    #[allow(dead_code)]
     pub fn file_manager_open_failed() -> &'static str {
         match current_language() {
             Language::English => "Failed to open file manager",
@@ -1548,6 +1549,7 @@ impl Translations {
         }
     }
 
+    #[allow(dead_code)]
     pub fn file_shown_in_explorer() -> &'static str {
         match current_language() {
             Language::English => "Shown in Explorer",

@@ -96,6 +96,10 @@ pub struct LoglineApp {
     /// Tokio runtime for async MCP operations
     tokio_runtime: Option<tokio::runtime::Runtime>,
 
+    // === Android Logcat ===
+    /// Active logcat readers (device_serial -> (reader, cache_path, tab_id))
+    active_logcat_readers: std::collections::HashMap<String, (crate::android_logcat::LogcatReader, std::path::PathBuf, crate::ui::tab_bar::TabId)>,
+
     /// Whether this is the first frame (for initial theme application)
     first_frame: bool,
 
@@ -292,6 +296,8 @@ impl LoglineApp {
             // MCP server
             mcp_server,
             tokio_runtime,
+            // Android logcat readers
+            active_logcat_readers: std::collections::HashMap::new(),
             // First frame flag for initial theme application
             first_frame: true,
             // System tray - will be initialized after event loop starts
@@ -422,6 +428,188 @@ impl LoglineApp {
         Ok(())
     }
 
+    /// Open Android logcat in a new tab
+    pub fn open_android_logcat(&mut self, device: crate::android_logcat::AndroidDevice) -> Result<()> {
+        use crate::android_logcat::{LogcatReader, LogcatOptions};
+        
+        // Check if we already have an active logcat for this device
+        if let Some((_, _cache_path, tab_id)) = self.active_logcat_readers.get(&device.serial) {
+            // Check if the tab is still open
+            if self.tab_manager.states.contains_key(tab_id) {
+                // Just switch to the existing tab
+                self.tab_manager.tab_bar.active_tab = Some(*tab_id);
+                self.status_bar.set_message(
+                    format!("Switched to existing logcat: {}", device.model),
+                    StatusLevel::Info,
+                );
+                return Ok(());
+            } else {
+                // Tab was closed, remove the stale entry
+                // Reader will be dropped and stopped automatically
+                self.active_logcat_readers.remove(&device.serial);
+            }
+        }
+
+        // Create a display name for the tab
+        let logcat_name = format!("📱 {}", device.model);
+
+        // Create a cache file - use device serial only (no timestamp)
+        let cache_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("logline")
+            .join("logcat");
+        
+        // Ensure cache directory exists
+        std::fs::create_dir_all(&cache_dir)?;
+        
+        // Use only device serial for file name (no timestamp)
+        let cache_file = cache_dir.join(format!("{}.log", 
+            device.serial.replace(':', "_").replace('.', "_")
+        ));
+
+        // Clear existing file if it exists (start fresh)
+        if cache_file.exists() {
+            std::fs::remove_file(&cache_file)?;
+        }
+        
+        // Create the cache file
+        std::fs::File::create(&cache_file)?;
+
+        // Create and start the logcat reader
+        let reader = LogcatReader::new(
+            device.serial.clone(),
+            LogcatOptions {
+                clear_before_read: true, // Start with fresh logs
+                ..Default::default()
+            },
+        );
+        reader.start_streaming()?;
+
+        // Get the receiver for log entries
+        let receiver = reader.get_receiver();
+
+        // Spawn a background thread to write logcat to cache file
+        let cache_file_clone = cache_file.clone();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            use std::fs::OpenOptions;
+            
+            let mut file = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&cache_file_clone) 
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to open logcat cache file: {}", e);
+                    return;
+                }
+            };
+
+            while let Ok(line) = receiver.recv() {
+                if writeln!(file, "{}", line).is_err() {
+                    break;
+                }
+                // Flush to ensure data is written to disk immediately
+                let _ = file.flush();
+            }
+        });
+
+        // Wait a bit for initial logs to arrive
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Open as a remote stream (which enables auto-refresh behavior)
+        let tab_id = self.tab_manager.open_remote_stream(
+            logcat_name.clone(),
+            cache_file.clone(),
+            &self.bookmarks_store,
+        )?;
+
+        // Store the reader so it stays alive and we can track it
+        self.active_logcat_readers.insert(
+            device.serial.clone(),
+            (reader, cache_file.clone(), tab_id),
+        );
+
+        // Enable auto-scroll for logcat
+        if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
+            state.main_view.scroll_to_bottom();
+            state.main_view.virtual_scroll.state.auto_scroll = true;
+        }
+
+        self.status_bar.set_message(
+            format!("Android logcat started: {}", device.model),
+            StatusLevel::Success,
+        );
+
+        Ok(())
+    }
+
+    /// Connect to Android device over TCP
+    pub fn connect_android_tcp(&mut self, address: String) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.connect_tcp(&address) {
+            Ok(msg) => {
+                self.status_bar.set_message(msg, StatusLevel::Success);
+                self.explorer_panel.clear_tcp_connect_dialog();
+                // Refresh device list after successful connection
+                self.refresh_android_devices();
+            }
+            Err(e) => {
+                self.explorer_panel.set_tcp_connect_error(Some(format!("{}", e)));
+                self.status_bar.set_message(
+                    format!("Failed to connect: {}", e),
+                    StatusLevel::Error,
+                );
+            }
+        }
+    }
+
+    /// Disconnect Android device (TCP only)
+    pub fn disconnect_android_device(&mut self, serial: String) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.disconnect_tcp(&serial) {
+            Ok(msg) => {
+                self.status_bar.set_message(msg, StatusLevel::Success);
+                // Refresh device list after disconnect
+                self.refresh_android_devices();
+            }
+            Err(e) => {
+                self.status_bar.set_message(
+                    format!("Failed to disconnect: {}", e),
+                    StatusLevel::Error,
+                );
+            }
+        }
+    }
+
+    /// Refresh Android devices list
+    pub fn refresh_android_devices(&mut self) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.list_devices() {
+            Ok(devices) => {
+                self.explorer_panel.update_android_devices(devices.clone());
+                self.status_bar.set_message(
+                    format!("Found {} Android device(s)", devices.len()),
+                    StatusLevel::Info,
+                );
+            }
+            Err(e) => {
+                self.explorer_panel.update_android_devices(Vec::new());
+                self.status_bar.set_message(
+                    format!("ADB: {}. Try 'adb start-server'", e),
+                    StatusLevel::Warning,
+                );
+            }
+        }
+    }
+
     /// Open a log file in split view
     pub fn open_file_in_split(&mut self, path: PathBuf) -> Result<()> {
         // First, try to open the file in a new tab if it's not already open
@@ -438,6 +626,17 @@ impl LoglineApp {
 
     /// Close a tab by ID
     pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
+        // Check if this is a logcat tab and clean up the reader
+        let serial_to_remove: Option<String> = self.active_logcat_readers
+            .iter()
+            .find(|(_, (_, _, id))| *id == tab_id)
+            .map(|(serial, _)| serial.clone());
+        
+        if let Some(serial) = serial_to_remove {
+            // Remove and drop the reader (this will stop the streaming)
+            self.active_logcat_readers.remove(&serial);
+        }
+        
         self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
     }
 
@@ -1184,10 +1383,10 @@ impl LoglineApp {
 }
 
 impl eframe::App for LoglineApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply native rounded corners on Windows (only called once)
         #[cfg(target_os = "windows")]
-        apply_rounded_corners(frame);
+        apply_rounded_corners(_frame);
         
         // Handle file drag-and-drop
         ctx.input(|i| {
@@ -1368,6 +1567,9 @@ impl eframe::App for LoglineApp {
                 Theme::Light => egui::Visuals::light(),
             };
             ctx.set_visuals(visuals);
+            
+            // Refresh Android devices on startup (in background to avoid blocking)
+            self.refresh_android_devices();
         }
 
         // Process background messages for all tabs
@@ -1968,6 +2170,23 @@ impl eframe::App for LoglineApp {
                                             StatusLevel::Info,
                                         );
                                     }
+                                }
+                                ExplorerAction::OpenAndroidLogcat(device) => {
+                                    if let Err(e) = self.open_android_logcat(device.clone()) {
+                                        self.status_bar.set_message(
+                                            format!("Failed to open Android logcat: {}", e),
+                                            StatusLevel::Error,
+                                        );
+                                    }
+                                }
+                                ExplorerAction::RefreshAndroidDevices => {
+                                    self.refresh_android_devices();
+                                }
+                                ExplorerAction::ConnectAndroidTcp(address) => {
+                                    self.connect_android_tcp(address);
+                                }
+                                ExplorerAction::DisconnectAndroidDevice(serial) => {
+                                    self.disconnect_android_device(serial);
                                 }
                                 ExplorerAction::None => {}
                             }

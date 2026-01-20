@@ -2,6 +2,7 @@
 //!
 //! Displays local files and remote streams in a tree-like structure.
 
+use crate::android_logcat::{AndroidDevice, ConnectionType};
 use crate::i18n::Translations as t;
 use crate::remote_server::{ConnectionStatus, RemoteStream};
 use egui::{CollapsingHeader, Color32, RichText, Ui};
@@ -14,6 +15,14 @@ pub struct ExplorerPanel {
     pub local_files: Vec<PathBuf>,
     /// Remote streams
     pub remote_streams: Vec<RemoteStream>,
+    /// Android devices
+    pub android_devices: Vec<AndroidDevice>,
+    /// TCP connect dialog state
+    tcp_connect_address: String,
+    /// Show TCP connect dialog
+    show_tcp_connect_dialog: bool,
+    /// Error message for TCP connection
+    tcp_connect_error: Option<String>,
 }
 
 impl Default for ExplorerPanel {
@@ -27,12 +36,33 @@ impl ExplorerPanel {
         Self {
             local_files: Vec::new(),
             remote_streams: Vec::new(),
+            android_devices: Vec::new(),
+            tcp_connect_address: String::new(),
+            show_tcp_connect_dialog: false,
+            tcp_connect_error: None,
         }
     }
 
     /// Update remote streams
     pub fn update_remote_streams(&mut self, streams: Vec<RemoteStream>) {
         self.remote_streams = streams;
+    }
+
+    /// Update Android devices
+    pub fn update_android_devices(&mut self, devices: Vec<AndroidDevice>) {
+        self.android_devices = devices;
+    }
+
+    /// Set TCP connection error message
+    pub fn set_tcp_connect_error(&mut self, error: Option<String>) {
+        self.tcp_connect_error = error;
+    }
+
+    /// Clear TCP connect dialog
+    pub fn clear_tcp_connect_dialog(&mut self) {
+        self.show_tcp_connect_dialog = false;
+        self.tcp_connect_address.clear();
+        self.tcp_connect_error = None;
     }
 
     /// Render the explorer panel
@@ -147,6 +177,151 @@ impl ExplorerPanel {
 
                         if ui.button(format!("📁 {}", t::open_file())).clicked() {
                             action = ExplorerAction::OpenFileDialog;
+                        }
+                    });
+
+                ui.add_space(12.0);
+
+                // ANDROID DEVICES section
+                CollapsingHeader::new(RichText::new("📱 Android Devices").strong())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if self.android_devices.is_empty() {
+                            ui.label(RichText::new("No devices connected").weak().italics());
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("Connect via USB or WiFi (TCP/IP)")
+                                    .weak()
+                                    .small(),
+                            );
+                        } else {
+                            for device in &self.android_devices.clone() {
+                                let (status_icon, status_color) = if device.is_online {
+                                    ("●", Color32::from_rgb(50, 205, 50))
+                                } else {
+                                    ("○", Color32::GRAY)
+                                };
+
+                                // Connection type icon
+                                let conn_icon = match device.connection_type {
+                                    ConnectionType::Usb => "🔌",
+                                    ConnectionType::Tcp => "📶",
+                                    ConnectionType::Unknown => "❓",
+                                };
+
+                                ui.horizontal(|ui| {
+                                    ui.label(conn_icon);
+                                    ui.label(RichText::new(status_icon).color(status_color).size(10.0));
+
+                                    let device_label = if device.model != "Unknown" {
+                                        device.model.clone()
+                                    } else {
+                                        device.serial.clone()
+                                    };
+                                    
+                                    let response = ui.selectable_label(
+                                        false,
+                                        RichText::new(&device_label).size(12.0),
+                                    );
+
+                                    if response.clicked() && device.is_online {
+                                        action = ExplorerAction::OpenAndroidLogcat(device.clone());
+                                    }
+
+                                    // Tooltip with device info
+                                    let tooltip_text = format!(
+                                        "📱 {}\nSerial: {}\nProduct: {}\nState: {}\nConnection: {}{}",
+                                        device.model,
+                                        device.serial,
+                                        device.product,
+                                        device.state,
+                                        device.connection_type,
+                                        if device.is_online { "\n\nClick to view logcat" } else { "\n\n⚠️ Device offline" }
+                                    );
+
+                                    // Context menu for device
+                                    response.on_hover_text(&tooltip_text).context_menu(|ui| {
+                                        ui.set_min_width(180.0);
+                                        
+                                        if device.is_online {
+                                            if ui.button("📋 View Logcat").clicked() {
+                                                action = ExplorerAction::OpenAndroidLogcat(device.clone());
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                        }
+
+                                        if ui.button("📋 Copy Serial").clicked() {
+                                            ui.ctx().copy_text(device.serial.clone());
+                                            ui.close();
+                                        }
+
+                                        // Disconnect option for TCP devices
+                                        if device.connection_type == ConnectionType::Tcp {
+                                            ui.separator();
+                                            if ui.button("🔌 Disconnect").clicked() {
+                                                action = ExplorerAction::DisconnectAndroidDevice(device.serial.clone());
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("🔄 Refresh").on_hover_text("Refresh device list").clicked() {
+                                action = ExplorerAction::RefreshAndroidDevices;
+                            }
+                            
+                            if ui.button("📶 Connect TCP").on_hover_text("Connect to device over WiFi").clicked() {
+                                self.show_tcp_connect_dialog = true;
+                                self.tcp_connect_error = None;
+                            }
+                        });
+
+                        // TCP Connect Dialog
+                        if self.show_tcp_connect_dialog {
+                            ui.add_space(8.0);
+                            ui.group(|ui| {
+                                ui.label(RichText::new("Connect via TCP/IP").strong());
+                                ui.add_space(4.0);
+                                
+                                ui.horizontal(|ui| {
+                                    ui.label("Address:");
+                                    let response = ui.text_edit_singleline(&mut self.tcp_connect_address);
+                                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        if !self.tcp_connect_address.is_empty() {
+                                            action = ExplorerAction::ConnectAndroidTcp(self.tcp_connect_address.clone());
+                                        }
+                                    }
+                                });
+                                
+                                ui.label(RichText::new("e.g. 192.168.1.100 or 192.168.1.100:5555").weak().small());
+                                
+                                if let Some(ref error) = self.tcp_connect_error {
+                                    ui.label(RichText::new(error).color(Color32::RED).small());
+                                }
+                                
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button("Connect").clicked() {
+                                        if !self.tcp_connect_address.is_empty() {
+                                            action = ExplorerAction::ConnectAndroidTcp(self.tcp_connect_address.clone());
+                                        }
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        self.show_tcp_connect_dialog = false;
+                                        self.tcp_connect_address.clear();
+                                        self.tcp_connect_error = None;
+                                    }
+                                });
+                            });
                         }
                     });
 
@@ -280,6 +455,10 @@ pub enum ExplorerAction {
     RevealInFinder(PathBuf),
     RemoveFromRecent(PathBuf),
     ClearRecentFiles,
+    OpenAndroidLogcat(AndroidDevice),
+    RefreshAndroidDevices,
+    ConnectAndroidTcp(String),
+    DisconnectAndroidDevice(String),
 }
 
 /// Format bytes to human-readable string
