@@ -75,6 +75,9 @@ resvg = "0.45"
 # Network interface information (cross-platform)
 if-addrs = "0.13"
 
+# Android ADB client (for logcat support without installing adb)
+adb_client = { git = "https://github.com/cocool97/adb_client", package = "adb_client", branch = "main" }
+
 [dev-dependencies]
 tempfile = "3"
 
