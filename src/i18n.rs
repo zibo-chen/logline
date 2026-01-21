@@ -439,20 +439,6 @@ impl Translations {
         }
     }
 
-    pub fn agents_will_appear() -> &'static str {
-        match current_language() {
-            Language::English => "Agents will appear after connecting",
-            Language::Chinese => "Agent 将在连接后显示",
-        }
-    }
-
-    pub fn offline() -> &'static str {
-        match current_language() {
-            Language::English => "offline",
-            Language::Chinese => "离线",
-        }
-    }
-
     pub fn project() -> &'static str {
         match current_language() {
             Language::English => "Project",
@@ -492,20 +478,6 @@ impl Translations {
         match current_language() {
             Language::English => "No recent files",
             Language::Chinese => "无最近文件",
-        }
-    }
-
-    pub fn open_file() -> &'static str {
-        match current_language() {
-            Language::English => "Open file...",
-            Language::Chinese => "打开文件...",
-        }
-    }
-
-    pub fn open_file_dialog_title() -> &'static str {
-        match current_language() {
-            Language::English => "Open File",
-            Language::Chinese => "打开文件",
         }
     }
 
@@ -1098,13 +1070,6 @@ impl Translations {
         }
     }
 
-    pub fn copy_relative_path() -> &'static str {
-        match current_language() {
-            Language::English => "Copy Relative Path",
-            Language::Chinese => "复制相对路径",
-        }
-    }
-
     pub fn copy_filename() -> &'static str {
         match current_language() {
             Language::English => "Copy Filename",
@@ -1511,13 +1476,6 @@ impl Translations {
         }
     }
 
-    pub fn relative_path_copied() -> &'static str {
-        match current_language() {
-            Language::English => "Relative path copied",
-            Language::Chinese => "已复制相对路径",
-        }
-    }
-
     pub fn filename_copied() -> &'static str {
         match current_language() {
             Language::English => "Filename copied",
@@ -1795,6 +1753,183 @@ impl Translations {
         match current_language() {
             Language::English => "Settings saved",
             Language::Chinese => "设置已保存",
+        }
+    }
+
+    // ============ Source Picker Dialog ============
+    pub fn open_source_dialog_title() -> &'static str {
+        match current_language() {
+            Language::English => "Open Source",
+            Language::Chinese => "打开数据源",
+        }
+    }
+
+    pub fn local_files_tab() -> &'static str {
+        match current_language() {
+            Language::English => "Local Files",
+            Language::Chinese => "本地文件",
+        }
+    }
+
+    pub fn android_devices_tab() -> &'static str {
+        match current_language() {
+            Language::English => "Android Devices",
+            Language::Chinese => "Android 设备",
+        }
+    }
+
+    pub fn connected_devices() -> &'static str {
+        match current_language() {
+            Language::English => "Connected Devices",
+            Language::Chinese => "已连接设备",
+        }
+    }
+
+    pub fn refresh() -> &'static str {
+        match current_language() {
+            Language::English => "Refresh",
+            Language::Chinese => "刷新",
+        }
+    }
+
+    pub fn connect_tcp() -> &'static str {
+        match current_language() {
+            Language::English => "Connect TCP",
+            Language::Chinese => "TCP 连接",
+        }
+    }
+
+    pub fn connect_via_tcp() -> &'static str {
+        match current_language() {
+            Language::English => "Connect via WiFi / TCP",
+            Language::Chinese => "通过 WiFi / TCP 连接",
+        }
+    }
+
+    pub fn ip_address() -> &'static str {
+        match current_language() {
+            Language::English => "IP Address:",
+            Language::Chinese => "IP 地址:",
+        }
+    }
+
+    pub fn connect() -> &'static str {
+        match current_language() {
+            Language::English => "Connect",
+            Language::Chinese => "连接",
+        }
+    }
+
+    pub fn tcp_address_hint() -> &'static str {
+        match current_language() {
+            Language::English => "e.g. 192.168.1.100 or 192.168.1.100:5555",
+            Language::Chinese => "例如 192.168.1.100 或 192.168.1.100:5555",
+        }
+    }
+
+    pub fn no_devices_connected() -> &'static str {
+        match current_language() {
+            Language::English => "No devices connected",
+            Language::Chinese => "无已连接设备",
+        }
+    }
+
+    pub fn connect_device_hint() -> &'static str {
+        match current_language() {
+            Language::English => "Connect a device via USB or WiFi (TCP/IP)",
+            Language::Chinese => "通过 USB 或 WiFi (TCP/IP) 连接设备",
+        }
+    }
+
+    pub fn online() -> &'static str {
+        match current_language() {
+            Language::English => "Online",
+            Language::Chinese => "在线",
+        }
+    }
+
+    pub fn device_offline() -> &'static str {
+        match current_language() {
+            Language::English => "Device offline",
+            Language::Chinese => "设备离线",
+        }
+    }
+
+    pub fn view_logcat() -> &'static str {
+        match current_language() {
+            Language::English => "View Logcat",
+            Language::Chinese => "查看日志",
+        }
+    }
+
+    pub fn disconnect() -> &'static str {
+        match current_language() {
+            Language::English => "Disconnect",
+            Language::Chinese => "断开连接",
+        }
+    }
+
+    // ============ Explorer Panel ============
+    pub fn explorer_header() -> &'static str {
+        match current_language() {
+            Language::English => "EXPLORER",
+            Language::Chinese => "资源管理器",
+        }
+    }
+
+    pub fn open_source() -> &'static str {
+        match current_language() {
+            Language::English => "Open Source (Cmd+O)",
+            Language::Chinese => "打开数据源 (Cmd+O)",
+        }
+    }
+
+    pub fn android_devices() -> &'static str {
+        match current_language() {
+            Language::English => "Android Devices",
+            Language::Chinese => "Android 设备",
+        }
+    }
+
+    pub fn serial() -> &'static str {
+        match current_language() {
+            Language::English => "Serial",
+            Language::Chinese => "序列号",
+        }
+    }
+
+    pub fn connection() -> &'static str {
+        match current_language() {
+            Language::English => "Connection",
+            Language::Chinese => "连接方式",
+        }
+    }
+
+    pub fn state_label() -> &'static str {
+        match current_language() {
+            Language::English => "State: ",
+            Language::Chinese => "状态: ",
+        }
+    }
+
+    pub fn click_to_view_logcat() -> &'static str {
+        match current_language() {
+            Language::English => "Click to view logcat",
+            Language::Chinese => "点击查看日志",
+        }
+    }
+
+    pub fn copy_serial() -> &'static str {
+        match current_language() {
+            Language::English => "Copy Serial",
+            Language::Chinese => "复制序列号",
+        }
+    }
+
+    pub fn manage_devices() -> &'static str {
+        match current_language() {
+            Language::English => "Manage Devices...",
+            Language::Chinese => "管理设备...",
         }
     }
 }

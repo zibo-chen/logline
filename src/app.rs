@@ -13,13 +13,13 @@ use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::close_dialog::{CloseDialog, CloseDialogResult};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
-use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
 use crate::ui::grok_panel::{GrokPanel, GrokPanelAction};
 use crate::ui::main_view::ContextMenuAction;
 use crate::ui::search_bar::{SearchBar, SearchBarAction};
 use crate::ui::settings_panel::{SettingsAction, SettingsPanel};
+use crate::ui::source_picker_dialog::{SourcePickerAction, SourcePickerDialog, SourceTab};
 use crate::ui::status_bar::{StatusBar, StatusLevel};
 use crate::ui::tab_bar::TabBarAction;
 use crate::ui::tab_manager::TabManager;
@@ -62,8 +62,8 @@ pub struct LoglineApp {
 
     /// Go-to-line dialog state
     goto_dialog: GotoLineDialog,
-    /// File picker dialog
-    file_picker_dialog: FilePickerDialog,
+    /// Source picker dialog (replaces file picker)
+    source_picker_dialog: SourcePickerDialog,
 
     /// Last update time for rate limiting
     last_update: Instant,
@@ -235,7 +235,7 @@ impl LoglineApp {
                 split_view_active: false,
             },
             goto_dialog: GotoLineDialog::default(),
-            file_picker_dialog: FilePickerDialog::new(),
+            source_picker_dialog: SourcePickerDialog::new(),
             last_update: Instant::now(),
             // New components
             remote_server,
@@ -553,12 +553,12 @@ impl LoglineApp {
         match manager.connect_tcp(&address) {
             Ok(msg) => {
                 self.status_bar.set_message(msg, StatusLevel::Success);
-                self.explorer_panel.clear_tcp_connect_dialog();
+                self.source_picker_dialog.clear_tcp_connect();
                 // Refresh device list after successful connection
                 self.refresh_android_devices();
             }
             Err(e) => {
-                self.explorer_panel.set_tcp_connect_error(Some(format!("{}", e)));
+                self.source_picker_dialog.set_tcp_connect_error(Some(format!("{}", e)));
                 self.status_bar.set_message(
                     format!("Failed to connect: {}", e),
                     StatusLevel::Error,
@@ -1034,7 +1034,7 @@ impl LoglineApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<AppAction> {
         // Check for shortcuts using ctx.input_mut
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.open_file)) {
-            return Some(AppAction::OpenFileDialog);
+            return Some(AppAction::OpenSourcePicker);
         }
 
         // Reload file shortcut (Cmd+Shift+R) - check before toggle_reverse_order (Cmd+R)
@@ -1298,7 +1298,7 @@ impl LoglineApp {
     /// Handle toolbar actions
     fn handle_toolbar_action(&mut self, action: ToolbarAction) -> Option<AppAction> {
         match action {
-            ToolbarAction::OpenFile => Some(AppAction::OpenFileDialog),
+            ToolbarAction::OpenFile => Some(AppAction::OpenSourcePicker),
             ToolbarAction::ReloadFile => {
                 self.reload_file();
                 None
@@ -1454,9 +1454,10 @@ impl eframe::App for LoglineApp {
                         // Restore window and focus
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        // Open file dialog
-                        self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
-                        self.file_picker_dialog.show_dialog();
+                        // Open source picker dialog
+                        self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                        self.source_picker_dialog.show_dialog();
                     }
                     TrayEvent::Settings => {
                         // Restore window and focus
@@ -2038,8 +2039,11 @@ impl eframe::App for LoglineApp {
                                         );
                                     }
                                 }
-                                ExplorerAction::OpenFileDialog => {
-                                    action = Some(AppAction::OpenFileDialog);
+                                ExplorerAction::OpenSourcePicker => {
+                                    action = Some(AppAction::OpenSourcePicker);
+                                }
+                                ExplorerAction::OpenSourcePickerAndroid => {
+                                    action = Some(AppAction::OpenSourcePickerAndroid);
                                 }
                                 ExplorerAction::OpenInSplit(path) => {
                                     if let Err(e) = self.open_file_in_split(path.clone()) {
@@ -2054,21 +2058,6 @@ impl eframe::App for LoglineApp {
                                     ui.ctx().copy_text(abs_path.clone());
                                     self.status_bar.set_message(
                                         format!("{}: {}", t::absolute_path_copied(), abs_path),
-                                        StatusLevel::Info,
-                                    );
-                                }
-                                ExplorerAction::CopyRelativePath(path) => {
-                                    let rel_path = if let Ok(current_dir) = std::env::current_dir() {
-                                        path.strip_prefix(&current_dir)
-                                            .unwrap_or(&path)
-                                            .display()
-                                            .to_string()
-                                    } else {
-                                        path.display().to_string()
-                                    };
-                                    ui.ctx().copy_text(rel_path.clone());
-                                    self.status_bar.set_message(
-                                        format!("{}: {}", t::relative_path_copied(), rel_path),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -2178,12 +2167,6 @@ impl eframe::App for LoglineApp {
                                             StatusLevel::Error,
                                         );
                                     }
-                                }
-                                ExplorerAction::RefreshAndroidDevices => {
-                                    self.refresh_android_devices();
-                                }
-                                ExplorerAction::ConnectAndroidTcp(address) => {
-                                    self.connect_android_tcp(address);
                                 }
                                 ExplorerAction::DisconnectAndroidDevice(serial) => {
                                     self.disconnect_android_device(serial);
@@ -2701,7 +2684,9 @@ impl eframe::App for LoglineApp {
                                 let button = egui::Button::new(RichText::new(t::open_file_button()).size(16.0))
                                     .min_size(egui::vec2(180.0, 40.0));
                                 if ui.add(button).clicked() {
-                                    self.file_picker_dialog.show_dialog();
+                                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                                    self.source_picker_dialog.show_dialog();
                                 }
                                 
                                 ui.add_space(40.0);
@@ -2821,27 +2806,51 @@ impl eframe::App for LoglineApp {
             self.show_goto_dialog(ctx);
         }
 
-        // File picker dialog
-        match self.file_picker_dialog.show(ctx) {
-            FilePickerAction::OpenFile(path, encoding) => {
+        // Source picker dialog
+        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+        match self.source_picker_dialog.show(ctx) {
+            SourcePickerAction::OpenFile(path, encoding) => {
                 if let Err(e) = self.open_file(path.clone(), encoding) {
                     self.status_bar
                         .set_message(format!("{}: {}", t::file_open_failed(), e), StatusLevel::Error);
                 }
             }
-            FilePickerAction::Cancel => {}
-            FilePickerAction::None => {}
+            SourcePickerAction::OpenAndroidDevice(device) => {
+                if let Err(e) = self.open_android_logcat(device.clone()) {
+                    self.status_bar.set_message(
+                        format!("Failed to open Android logcat: {}", e),
+                        StatusLevel::Error,
+                    );
+                }
+            }
+            SourcePickerAction::RefreshAndroidDevices => {
+                self.refresh_android_devices();
+            }
+            SourcePickerAction::ConnectAndroidTcp(address) => {
+                self.connect_android_tcp(address);
+            }
+            SourcePickerAction::DisconnectAndroidDevice(serial) => {
+                self.disconnect_android_device(serial);
+            }
+            SourcePickerAction::Cancel => {}
+            SourcePickerAction::None => {}
         }
 
         // Handle actions
         if let Some(action) = action {
             match action {
-                AppAction::OpenFileDialog => {
+                AppAction::OpenSourcePicker => {
                     // Use recent files from config
-                    self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
-
-                    // Show the new file picker dialog
-                    self.file_picker_dialog.show_dialog();
+                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                    // Show the source picker dialog
+                    self.source_picker_dialog.show_dialog();
+                }
+                AppAction::OpenSourcePickerAndroid => {
+                    // Open source picker with Android tab active
+                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                    self.source_picker_dialog.show_dialog_tab(SourceTab::AndroidDevices);
                 }
                 AppAction::UpdateTheme => {
                     let visuals = match self.config.theme {
@@ -2965,7 +2974,8 @@ impl LoglineApp {
 /// Application actions
 #[derive(Debug, Clone, Copy)]
 enum AppAction {
-    OpenFileDialog,
+    OpenSourcePicker,
+    OpenSourcePickerAndroid,
     UpdateTheme,
 }
 

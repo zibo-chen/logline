@@ -29,6 +29,7 @@ pub struct AndroidDevice {
     /// Device product name
     pub product: String,
     /// Device state (device, offline, unauthorized, etc.)
+    #[allow(dead_code)]
     pub state: String,
     /// Connection type (USB or TCP)
     pub connection_type: ConnectionType,
@@ -393,8 +394,8 @@ impl LogcatReader {
 
         // Track if this is the first connection (for clearing logs)
         let mut first_run = true;
-        // Track the last timestamp for reconnection (to avoid duplicate logs)
-        let mut last_timestamp: Option<String> = None;
+        // Track the number of lines received for reconnection handling
+        let mut total_lines_received: usize = 0;
 
         while !stop_signal.load(Ordering::Relaxed) {
             // Create device connection
@@ -408,30 +409,17 @@ impl LogcatReader {
                 thread::sleep(Duration::from_millis(100));
             }
 
-            // Determine start timestamp on first run to avoid dumping full buffer
-            if first_run && last_timestamp.is_none() {
-                let mut output = Vec::new();
-                // Try to get device current time in logcat format
-                if device
-                    .shell_command(&"date '+%m-%d %H:%M:%S.000'", &mut output)
-                    .is_ok()
-                {
-                    let ts = String::from_utf8_lossy(&output).trim().to_string();
-                    if ts.len() >= 18 {
-                        last_timestamp = Some(ts);
-                    }
-                }
-            }
-
             first_run = false;
 
-            // Build command string - use exec to keep streaming session open
-            let mut cmd = format!("exec logcat -v {}", format_arg);
+            // Build command string - avoid quotes by using simpler options
+            // Using -T with a number (count) instead of timestamp to avoid shell quoting issues
+            let mut cmd = format!("logcat -v {}", format_arg);
 
-            // If we have a last timestamp, use -T to only get new logs
-            // This prevents duplicate logs on reconnection
-            if let Some(ref ts) = last_timestamp {
-                cmd.push_str(&format!(" -T '{}'", ts));
+            // Use -T with a count to limit history
+            // -T 1 means start from the 1 most recent line
+            if total_lines_received > 0 {
+                // After first connection, only show new logs (start from last line)
+                cmd.push_str(" -T 1");
             }
 
             if let Some(ref pf) = priority_filter {
@@ -442,7 +430,7 @@ impl LogcatReader {
                 cmd.push_str(&format!(" {} *:S", tf));
             }
 
-            // Create a custom writer that sends lines to the channel and tracks timestamps
+            // Create a custom writer that sends lines to the channel and tracks count
             let mut line_writer = LogcatLineWriter::new(log_sender.clone(), stop_signal.clone());
 
             // Run logcat command with streaming output
@@ -458,10 +446,8 @@ impl LogcatReader {
                 }
             }
 
-            // Get the last timestamp from the writer for next reconnection
-            if let Some(ts) = line_writer.get_last_timestamp() {
-                last_timestamp = Some(ts);
-            }
+            // Update total lines received
+            total_lines_received += line_writer.get_lines_count();
 
             if stop_signal.load(Ordering::Relaxed) {
                 break;
@@ -482,13 +468,29 @@ impl Drop for LogcatReader {
 }
 
 /// Custom writer that buffers and sends complete lines to a channel
-/// Also tracks the last timestamp for reconnection handling
+/// Also tracks the number of lines for reconnection handling
+/// Handles shell_v2 protocol which prefixes data with ID bytes
 struct LogcatLineWriter {
     sender: Sender<String>,
     stop_signal: Arc<AtomicBool>,
     buffer: String,
-    /// Last seen timestamp (format: "MM-DD HH:MM:SS.mmm")
-    last_timestamp: Option<String>,
+    /// Number of lines processed
+    lines_count: usize,
+    /// Track if we're at the start of a new shell_v2 packet
+    /// shell_v2 format: [id:1][length:4][data:length]
+    /// id: 0=stdin, 1=stdout, 2=stderr, 3=exit
+    packet_state: PacketState,
+}
+
+/// State machine for parsing shell_v2 packets
+#[derive(Debug, Clone)]
+enum PacketState {
+    /// Waiting for packet ID byte
+    WaitingForId,
+    /// Reading the 4-byte length field
+    ReadingLength { id: u8, length_bytes: Vec<u8> },
+    /// Reading packet data
+    ReadingData { id: u8, remaining: usize },
 }
 
 impl LogcatLineWriter {
@@ -497,35 +499,76 @@ impl LogcatLineWriter {
             sender,
             stop_signal,
             buffer: String::new(),
-            last_timestamp: None,
+            lines_count: 0,
+            packet_state: PacketState::WaitingForId,
         }
     }
 
     fn flush_line(&mut self) {
         if !self.buffer.is_empty() {
             let line = std::mem::take(&mut self.buffer);
-
-            // Try to extract timestamp from the line
-            // Logcat time format: "MM-DD HH:MM:SS.mmm" (18 chars)
-            // Example: "01-20 15:30:45.123 D/Tag: message"
-            if line.len() >= 18 {
-                let potential_ts = &line[..18];
-                // Simple validation: check if it looks like a timestamp
-                if potential_ts.chars().nth(2) == Some('-')
-                    && potential_ts.chars().nth(5) == Some(' ')
-                    && potential_ts.chars().nth(8) == Some(':')
-                {
-                    self.last_timestamp = Some(potential_ts.to_string());
-                }
+            // Filter out lines that are clearly not logcat output
+            // (e.g., shell prompts, error messages)
+            if Self::is_valid_logcat_line(&line) {
+                self.lines_count += 1;
+                let _ = self.sender.send(line);
             }
-
-            let _ = self.sender.send(line);
         }
     }
 
-    /// Get the last timestamp seen (for reconnection)
-    fn get_last_timestamp(&self) -> Option<String> {
-        self.last_timestamp.clone()
+    /// Check if a line looks like valid logcat output
+    fn is_valid_logcat_line(line: &str) -> bool {
+        // Empty lines are not valid
+        if line.trim().is_empty() {
+            return false;
+        }
+
+        // Logcat lines typically start with a timestamp (MM-DD HH:MM:SS)
+        // or "--------- beginning of" marker
+        let trimmed = line.trim_start();
+
+        // Check for "beginning of" marker
+        if trimmed.starts_with("--------- beginning of") {
+            return true;
+        }
+
+        // Check for timestamp format: "MM-DD HH:MM:SS"
+        if trimmed.len() >= 18 {
+            let bytes = trimmed.as_bytes();
+            // Format: "01-21 00:31:21.947"
+            if bytes.len() >= 18
+                && bytes[2] == b'-'
+                && bytes[5] == b' '
+                && bytes[8] == b':'
+                && bytes[11] == b':'
+                && bytes[14] == b'.'
+            {
+                return true;
+            }
+        }
+
+        // If it doesn't match known patterns, still include it
+        // but filter out obvious garbage (single control characters, etc.)
+        line.len() > 1 && line.chars().all(|c| !c.is_control() || c == '\t')
+    }
+
+    /// Process a byte as part of stdout/stderr data
+    fn process_data_byte(&mut self, byte: u8) {
+        let ch = byte as char;
+        if ch == '\n' {
+            self.flush_line();
+        } else if ch != '\r' && !ch.is_control() {
+            // Filter out control characters except newline
+            self.buffer.push(ch);
+        } else if ch == '\t' {
+            // Allow tabs
+            self.buffer.push(ch);
+        }
+    }
+
+    /// Get the number of lines processed
+    fn get_lines_count(&self) -> usize {
+        self.lines_count
     }
 }
 
@@ -538,13 +581,66 @@ impl Write for LogcatLineWriter {
             ));
         }
 
-        let text = String::from_utf8_lossy(buf);
-
-        for ch in text.chars() {
-            if ch == '\n' {
-                self.flush_line();
-            } else if ch != '\r' {
-                self.buffer.push(ch);
+        let mut i = 0;
+        while i < buf.len() {
+            // Clone the state to avoid borrow issues
+            let current_state = self.packet_state.clone();
+            match current_state {
+                PacketState::WaitingForId => {
+                    let id = buf[i];
+                    i += 1;
+                    // id: 0=stdin, 1=stdout, 2=stderr, 3=exit
+                    if id <= 3 {
+                        self.packet_state = PacketState::ReadingLength {
+                            id,
+                            length_bytes: Vec::with_capacity(4),
+                        };
+                    } else {
+                        // Not a valid shell_v2 packet, treat as raw data
+                        // This handles the case where shell_v2 is not being used
+                        self.process_data_byte(id);
+                    }
+                }
+                PacketState::ReadingLength {
+                    id,
+                    mut length_bytes,
+                } => {
+                    length_bytes.push(buf[i]);
+                    i += 1;
+                    if length_bytes.len() == 4 {
+                        let length = u32::from_le_bytes([
+                            length_bytes[0],
+                            length_bytes[1],
+                            length_bytes[2],
+                            length_bytes[3],
+                        ]) as usize;
+                        if length == 0 {
+                            self.packet_state = PacketState::WaitingForId;
+                        } else {
+                            self.packet_state = PacketState::ReadingData {
+                                id,
+                                remaining: length,
+                            };
+                        }
+                    } else {
+                        self.packet_state = PacketState::ReadingLength { id, length_bytes };
+                    }
+                }
+                PacketState::ReadingData { id, remaining } => {
+                    // Only process stdout (1) and stderr (2) data
+                    if id == 1 || id == 2 {
+                        self.process_data_byte(buf[i]);
+                    }
+                    i += 1;
+                    if remaining <= 1 {
+                        self.packet_state = PacketState::WaitingForId;
+                    } else {
+                        self.packet_state = PacketState::ReadingData {
+                            id,
+                            remaining: remaining - 1,
+                        };
+                    }
+                }
             }
         }
 
