@@ -24,15 +24,29 @@ mod ui;
 mod virtual_scroll;
 
 mod mcp;
+mod open_file_handler;
 
 use app::LoglineApp;
 use eframe::egui;
+use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
     tracing::info!("Starting Logline");
+
+    // Collect files passed as command-line arguments (e.g. `logline file.log`)
+    let initial_files: Vec<PathBuf> = std::env::args()
+        .skip(1)
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .collect();
+
+    // Prepare the channel for file-open events (phase 1 – before eframe starts).
+    // The NSAppleEventManager registration (phase 2) happens inside LoglineApp::new()
+    // after NSApplication has been created by winit.
+    let file_receiver = open_file_handler::create_file_receiver();
 
     // Load icon for window
     let icon_bytes = include_bytes!("../res/icon.png");
@@ -96,7 +110,7 @@ fn main() -> eframe::Result<()> {
             // Install image loaders for egui (required for egui-desktop SVG assets)
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
-            Ok(Box::new(LoglineApp::new(cc)))
+            Ok(Box::new(LoglineApp::new(cc, initial_files, file_receiver)))
         }),
     )
 }

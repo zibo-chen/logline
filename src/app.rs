@@ -97,8 +97,9 @@ pub struct LoglineApp {
     tokio_runtime: Option<tokio::runtime::Runtime>,
 
     // === Android Logcat ===
-    /// Active logcat readers (device_serial -> (reader, cache_path, tab_id))
-    active_logcat_readers: std::collections::HashMap<String, (crate::android_logcat::LogcatReader, std::path::PathBuf, crate::ui::tab_bar::TabId)>,
+    /// Active logcat readers (device_serial -> (reader, cache_path, tab_id, stop_signal))
+    /// The stop_signal is used to notify the cache file writer thread to stop
+    active_logcat_readers: std::collections::HashMap<String, (crate::android_logcat::LogcatReader, std::path::PathBuf, crate::ui::tab_bar::TabId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
 
     /// Whether this is the first frame (for initial theme application)
     first_frame: bool,
@@ -124,11 +125,21 @@ pub struct LoglineApp {
     // === Custom Titlebar ===
     /// Custom title bar for the window
     title_bar: TitleBar,
+
+    // === File Open from Finder / command-line ===
+    /// Files queued to open on the first frame
+    pending_initial_files: Vec<PathBuf>,
+    /// Receives file paths from Apple Events (macOS Finder "Open With")
+    file_receiver: Option<std::sync::mpsc::Receiver<PathBuf>>,
 }
 
 impl LoglineApp {
     /// Create a new application instance
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_files: Vec<PathBuf>,
+        file_receiver: std::sync::mpsc::Receiver<PathBuf>,
+    ) -> Self {
         // Load configuration
         let config = AppConfig::load().unwrap_or_default();
 
@@ -209,6 +220,10 @@ impl LoglineApp {
 
             (mcp_server, runtime)
         };
+
+        // Register macOS Apple Events handler now that NSApplication exists.
+        // (Phase 2 of two-phase init – channel was created in main() before run_native.)
+        crate::open_file_handler::register_apple_event_handler();
 
         Self {
             display_config: config.display.clone(),
@@ -309,6 +324,9 @@ impl LoglineApp {
             close_dialog: CloseDialog::new(),
             // Load bookmarks from disk
             bookmarks_store: BookmarksStore::load().unwrap_or_default(),
+            // Files to open on startup
+            pending_initial_files: initial_files,
+            file_receiver: Some(file_receiver),
         }
     }
 
@@ -431,9 +449,11 @@ impl LoglineApp {
     /// Open Android logcat in a new tab
     pub fn open_android_logcat(&mut self, device: crate::android_logcat::AndroidDevice) -> Result<()> {
         use crate::android_logcat::{LogcatReader, LogcatOptions};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         
         // Check if we already have an active logcat for this device
-        if let Some((_, _cache_path, tab_id)) = self.active_logcat_readers.get(&device.serial) {
+        if let Some((_, _cache_path, tab_id, _)) = self.active_logcat_readers.get(&device.serial) {
             // Check if the tab is still open
             if self.tab_manager.states.contains_key(tab_id) {
                 // Just switch to the existing tab
@@ -444,9 +464,8 @@ impl LoglineApp {
                 );
                 return Ok(());
             } else {
-                // Tab was closed, remove the stale entry
-                // Reader will be dropped and stopped automatically
-                self.active_logcat_readers.remove(&device.serial);
+                // Tab was closed, clean up the stale entry properly
+                self.cleanup_logcat_reader(&device.serial);
             }
         }
 
@@ -488,11 +507,16 @@ impl LoglineApp {
         // Get the receiver for log entries
         let receiver = reader.get_receiver();
 
+        // Create a stop signal for the writer thread
+        let writer_stop_signal = Arc::new(AtomicBool::new(false));
+        let writer_stop_signal_clone = Arc::clone(&writer_stop_signal);
+
         // Spawn a background thread to write logcat to cache file
         let cache_file_clone = cache_file.clone();
         std::thread::spawn(move || {
             use std::io::Write;
             use std::fs::OpenOptions;
+            use std::time::Duration;
             
             let mut file = match OpenOptions::new()
                 .create(true)
@@ -506,12 +530,25 @@ impl LoglineApp {
                 }
             };
 
-            while let Ok(line) = receiver.recv() {
-                if writeln!(file, "{}", line).is_err() {
-                    break;
+            // Use recv_timeout instead of blocking recv to check stop signal periodically
+            while !writer_stop_signal_clone.load(Ordering::Relaxed) {
+                match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(line) => {
+                        if writeln!(file, "{}", line).is_err() {
+                            break;
+                        }
+                        // Flush to ensure data is written to disk immediately
+                        let _ = file.flush();
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        // Continue checking stop signal
+                        continue;
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        // Channel closed, exit thread
+                        break;
+                    }
                 }
-                // Flush to ensure data is written to disk immediately
-                let _ = file.flush();
             }
         });
 
@@ -525,10 +562,10 @@ impl LoglineApp {
             &self.bookmarks_store,
         )?;
 
-        // Store the reader so it stays alive and we can track it
+        // Store the reader and stop signal so they stay alive and we can track them
         self.active_logcat_readers.insert(
             device.serial.clone(),
-            (reader, cache_file.clone(), tab_id),
+            (reader, cache_file.clone(), tab_id, writer_stop_signal),
         );
 
         // Enable auto-scroll for logcat
@@ -624,18 +661,60 @@ impl LoglineApp {
         Ok(())
     }
 
-    /// Close a tab by ID
-    pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
-        // Check if this is a logcat tab and clean up the reader
+    /// Clean up a logcat reader by device serial
+    /// This stops the reader, signals the writer thread to stop, and removes from tracking
+    fn cleanup_logcat_reader(&mut self, serial: &str) {
+        use std::sync::atomic::Ordering;
+        
+        if let Some((reader, _cache_path, _tab_id, writer_stop_signal)) = self.active_logcat_readers.remove(serial) {
+            // Signal the writer thread to stop
+            writer_stop_signal.store(true, Ordering::Relaxed);
+            // Stop the logcat reader (this will also close the channel)
+            reader.stop();
+        }
+    }
+
+    /// Clean up logcat reader associated with a tab ID
+    fn cleanup_logcat_reader_for_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
         let serial_to_remove: Option<String> = self.active_logcat_readers
             .iter()
-            .find(|(_, (_, _, id))| *id == tab_id)
+            .find(|(_, (_, _, id, _))| *id == tab_id)
             .map(|(serial, _)| serial.clone());
         
         if let Some(serial) = serial_to_remove {
-            // Remove and drop the reader (this will stop the streaming)
-            self.active_logcat_readers.remove(&serial);
+            self.cleanup_logcat_reader(&serial);
         }
+    }
+
+    /// Clean up all logcat readers for multiple tab IDs
+    fn cleanup_logcat_readers_for_tabs(&mut self, tab_ids: &[crate::ui::tab_bar::TabId]) {
+        let serials_to_remove: Vec<String> = self.active_logcat_readers
+            .iter()
+            .filter(|(_, (_, _, id, _))| tab_ids.contains(id))
+            .map(|(serial, _)| serial.clone())
+            .collect();
+        
+        for serial in serials_to_remove {
+            self.cleanup_logcat_reader(&serial);
+        }
+    }
+
+    /// Clean up all logcat readers
+    fn cleanup_all_logcat_readers(&mut self) {
+        use std::sync::atomic::Ordering;
+        
+        for (_, (reader, _cache_path, _tab_id, writer_stop_signal)) in self.active_logcat_readers.drain() {
+            // Signal the writer thread to stop
+            writer_stop_signal.store(true, Ordering::Relaxed);
+            // Stop the logcat reader
+            reader.stop();
+        }
+    }
+
+    /// Close a tab by ID
+    pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
+        // Clean up logcat reader if this is a logcat tab
+        self.cleanup_logcat_reader_for_tab(tab_id);
         
         self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
     }
@@ -1387,11 +1466,32 @@ impl eframe::App for LoglineApp {
         // Apply native rounded corners on Windows (only called once)
         #[cfg(target_os = "windows")]
         apply_rounded_corners(_frame);
-        
+
+        // Poll for files sent via Apple Events (macOS Finder "Open With" / default app)
+        // This handles the case where the app is already running when a file is opened.
+        {
+            let mut files_to_open: Vec<PathBuf> = Vec::new();
+            if let Some(ref rx) = self.file_receiver {
+                while let Ok(path) = rx.try_recv() {
+                    files_to_open.push(path);
+                }
+            }
+            for path in files_to_open {
+                match self.open_file(path.clone(), None) {
+                    Ok(_) => {
+                        let msg = format!("{}: {}", t::file_opened_success(), path.display());
+                        self.status_bar.set_message(msg, StatusLevel::Success);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to open file from Apple Event {:?}: {}", path, e);
+                    }
+                }
+            }
+        }
+
         // Handle file drag-and-drop
         ctx.input(|i| {
-            if !i.raw.dropped_files.is_empty() {
-                for file in &i.raw.dropped_files {
+            if !i.raw.dropped_files.is_empty() {                for file in &i.raw.dropped_files {
                     if let Some(path) = &file.path {
                         tracing::info!("File dropped: {:?}", path);
 
@@ -1571,6 +1671,14 @@ impl eframe::App for LoglineApp {
             
             // Refresh Android devices on startup (in background to avoid blocking)
             self.refresh_android_devices();
+
+            // Open files passed via command-line arguments
+            let files_to_open: Vec<PathBuf> = self.pending_initial_files.drain(..).collect();
+            for path in files_to_open {
+                if let Err(e) = self.open_file(path.clone(), None) {
+                    tracing::error!("Failed to open initial file {:?}: {}", path, e);
+                }
+            }
         }
 
         // Process background messages for all tabs
@@ -1930,16 +2038,40 @@ impl eframe::App for LoglineApp {
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseOtherTabs(keep_id) => {
+                            // Get all tab IDs that will be closed (all except keep_id)
+                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = self.tab_manager.tab_bar.tabs
+                                .iter()
+                                .filter(|tab| tab.id != keep_id)
+                                .map(|tab| tab.id)
+                                .collect();
+                            // Clean up logcat readers for tabs being closed
+                            self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
                             self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseTabsToRight(id) => {
+                            // Get all tab IDs to the right that will be closed
+                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = {
+                                if let Some(index) = self.tab_manager.tab_bar.tabs.iter().position(|tab| tab.id == id) {
+                                    self.tab_manager.tab_bar.tabs
+                                        .iter()
+                                        .skip(index + 1)
+                                        .map(|tab| tab.id)
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                }
+                            };
+                            // Clean up logcat readers for tabs being closed
+                            self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
                             self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseAllTabs => {
+                            // Clean up all logcat readers before closing tabs
+                            self.cleanup_all_logcat_readers();
                             self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
                             self.toolbar_state.split_view_active = false;
                         }
@@ -2939,6 +3071,10 @@ impl eframe::App for LoglineApp {
         // Stop remote server
         tracing::info!("Stopping remote server");
         self.remote_server.stop();
+
+        // Clean up all logcat readers
+        tracing::info!("Stopping all logcat readers");
+        self.cleanup_all_logcat_readers();
 
         // Close all tabs (this will stop file watchers)
         tracing::info!("Closing all tabs");
