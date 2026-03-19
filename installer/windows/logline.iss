@@ -30,7 +30,6 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
-ArchitecturesInstallMode=x64compatible
 PrivilegesRequired=admin
 ChangesAssociations=yes
 MinVersion=10.0

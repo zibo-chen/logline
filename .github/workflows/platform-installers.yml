@@ -204,16 +204,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             pkg-config dpkg-dev imagemagick
-          # Install aarch64 libraries
+          # Add arm64 architecture and repositories
           sudo dpkg --add-architecture arm64
-          # Add arm64 repo sources
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          # Restrict existing sources to amd64 only
+          sudo sed -i 's/^deb \[/deb [arch=amd64,/g; s/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          # Add arm64 ports sources in a separate file
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev:arm64 libxcb-render0-dev:arm64 \
             libxcb-shape0-dev:arm64 libxcb-xfixes0-dev:arm64 libxkbcommon-dev:arm64 \
-            libssl-dev:arm64 libxdo-dev:arm64 || true
+            libssl-dev:arm64 libxdo-dev:arm64
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -226,7 +227,9 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          PKG_CONFIG_SYSROOT_DIR: /usr/aarch64-linux-gnu
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /
         run: cargo build --release --target aarch64-unknown-linux-gnu
 
       - name: Build deb package
