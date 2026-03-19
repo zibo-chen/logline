@@ -10,12 +10,14 @@ pub struct Toolbar;
 
 impl Toolbar {
     /// Show the toolbar
+    /// Returns (action, filter_changed) tuple
     pub fn show(
         ui: &mut Ui,
         state: &mut ToolbarState,
         filter: Option<&mut FilterConfig>,
-    ) -> ToolbarAction {
+    ) -> (ToolbarAction, bool) {
         let mut action = ToolbarAction::None;
+        let mut filter_changed = false;
         let is_dark = state.dark_theme;
 
         // Theme-based colors
@@ -141,26 +143,12 @@ impl Toolbar {
             }
 
             // Clear button
-            if styled_button(
-                ui,
-                "🗑",
-                t::clear(),
-                t::clear_display_tooltip(),
-                false,
-                None,
-            ) {
+            if styled_button(ui, "🗑", t::clear(), t::clear_display_tooltip(), false, None) {
                 action = ToolbarAction::Clear;
             }
 
             // Reload button
-            if styled_button(
-                ui,
-                "🔄",
-                t::reload(),
-                t::reload_file_tooltip(),
-                false,
-                None,
-            ) {
+            if styled_button(ui, "🔄", t::reload(), t::reload_file_tooltip(), false, None) {
                 action = ToolbarAction::ReloadFile;
             }
 
@@ -334,6 +322,7 @@ impl Toolbar {
 
                     if btn.clicked() {
                         filter.toggle_level(level);
+                        filter_changed = true;
                     }
                 }
 
@@ -353,10 +342,12 @@ impl Toolbar {
 
                 if pill_btn(ui, t::all(), t::show_all_levels()) {
                     filter.enable_all_levels();
+                    filter_changed = true;
                 }
 
                 if pill_btn(ui, t::errors(), t::errors_and_warnings_only()) {
                     filter.errors_and_warnings_only();
+                    filter_changed = true;
                 }
 
                 // Separator
@@ -424,7 +415,7 @@ impl Toolbar {
             });
         });
 
-        action
+        (action, filter_changed)
     }
 }
 

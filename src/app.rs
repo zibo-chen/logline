@@ -13,13 +13,13 @@ use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::close_dialog::{CloseDialog, CloseDialogResult};
 use crate::ui::explorer_panel::{ExplorerAction, ExplorerPanel};
-use crate::ui::file_picker_dialog::{FilePickerAction, FilePickerDialog};
 use crate::ui::filter_panel::FilterPanel;
 use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
 use crate::ui::grok_panel::{GrokPanel, GrokPanelAction};
 use crate::ui::main_view::ContextMenuAction;
 use crate::ui::search_bar::{SearchBar, SearchBarAction};
 use crate::ui::settings_panel::{SettingsAction, SettingsPanel};
+use crate::ui::source_picker_dialog::{SourcePickerAction, SourcePickerDialog, SourceTab};
 use crate::ui::status_bar::{StatusBar, StatusLevel};
 use crate::ui::tab_bar::TabBarAction;
 use crate::ui::tab_manager::TabManager;
@@ -62,8 +62,8 @@ pub struct LoglineApp {
 
     /// Go-to-line dialog state
     goto_dialog: GotoLineDialog,
-    /// File picker dialog
-    file_picker_dialog: FilePickerDialog,
+    /// Source picker dialog (replaces file picker)
+    source_picker_dialog: SourcePickerDialog,
 
     /// Last update time for rate limiting
     last_update: Instant,
@@ -96,6 +96,11 @@ pub struct LoglineApp {
     /// Tokio runtime for async MCP operations
     tokio_runtime: Option<tokio::runtime::Runtime>,
 
+    // === Android Logcat ===
+    /// Active logcat readers (device_serial -> (reader, cache_path, tab_id, stop_signal))
+    /// The stop_signal is used to notify the cache file writer thread to stop
+    active_logcat_readers: std::collections::HashMap<String, (crate::android_logcat::LogcatReader, std::path::PathBuf, crate::ui::tab_bar::TabId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+
     /// Whether this is the first frame (for initial theme application)
     first_frame: bool,
 
@@ -121,13 +126,20 @@ pub struct LoglineApp {
     /// Custom title bar for the window
     title_bar: TitleBar,
 
-    /// Files to open on startup (from command-line arguments)
-    initial_files: Vec<PathBuf>,
+    // === File Open from Finder / command-line ===
+    /// Files queued to open on the first frame
+    pending_initial_files: Vec<PathBuf>,
+    /// Receives file paths from Apple Events (macOS Finder "Open With")
+    file_receiver: Option<std::sync::mpsc::Receiver<PathBuf>>,
 }
 
 impl LoglineApp {
     /// Create a new application instance
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_files: Vec<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_files: Vec<PathBuf>,
+        file_receiver: std::sync::mpsc::Receiver<PathBuf>,
+    ) -> Self {
         // Load configuration
         let config = AppConfig::load().unwrap_or_default();
 
@@ -209,6 +221,10 @@ impl LoglineApp {
             (mcp_server, runtime)
         };
 
+        // Register macOS Apple Events handler now that NSApplication exists.
+        // (Phase 2 of two-phase init – channel was created in main() before run_native.)
+        crate::open_file_handler::register_apple_event_handler();
+
         Self {
             display_config: config.display.clone(),
             shortcuts: Shortcuts::default(),
@@ -234,7 +250,7 @@ impl LoglineApp {
                 split_view_active: false,
             },
             goto_dialog: GotoLineDialog::default(),
-            file_picker_dialog: FilePickerDialog::new(),
+            source_picker_dialog: SourcePickerDialog::new(),
             last_update: Instant::now(),
             // New components
             remote_server,
@@ -295,10 +311,10 @@ impl LoglineApp {
             // MCP server
             mcp_server,
             tokio_runtime,
+            // Android logcat readers
+            active_logcat_readers: std::collections::HashMap::new(),
             // First frame flag for initial theme application
             first_frame: true,
-            // Files to open from command-line
-            initial_files,
             // System tray - will be initialized after event loop starts
             tray_manager: None,
             should_quit: false,
@@ -308,6 +324,9 @@ impl LoglineApp {
             close_dialog: CloseDialog::new(),
             // Load bookmarks from disk
             bookmarks_store: BookmarksStore::load().unwrap_or_default(),
+            // Files to open on startup
+            pending_initial_files: initial_files,
+            file_receiver: Some(file_receiver),
         }
     }
 
@@ -427,6 +446,207 @@ impl LoglineApp {
         Ok(())
     }
 
+    /// Open Android logcat in a new tab
+    pub fn open_android_logcat(&mut self, device: crate::android_logcat::AndroidDevice) -> Result<()> {
+        use crate::android_logcat::{LogcatReader, LogcatOptions};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        
+        // Check if we already have an active logcat for this device
+        if let Some((_, _cache_path, tab_id, _)) = self.active_logcat_readers.get(&device.serial) {
+            // Check if the tab is still open
+            if self.tab_manager.states.contains_key(tab_id) {
+                // Just switch to the existing tab
+                self.tab_manager.tab_bar.active_tab = Some(*tab_id);
+                self.status_bar.set_message(
+                    format!("Switched to existing logcat: {}", device.model),
+                    StatusLevel::Info,
+                );
+                return Ok(());
+            } else {
+                // Tab was closed, clean up the stale entry properly
+                self.cleanup_logcat_reader(&device.serial);
+            }
+        }
+
+        // Create a display name for the tab
+        let logcat_name = format!("📱 {}", device.model);
+
+        // Create a cache file - use device serial only (no timestamp)
+        let cache_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("logline")
+            .join("logcat");
+        
+        // Ensure cache directory exists
+        std::fs::create_dir_all(&cache_dir)?;
+        
+        // Use only device serial for file name (no timestamp)
+        let cache_file = cache_dir.join(format!("{}.log", 
+            device.serial.replace(':', "_").replace('.', "_")
+        ));
+
+        // Clear existing file if it exists (start fresh)
+        if cache_file.exists() {
+            std::fs::remove_file(&cache_file)?;
+        }
+        
+        // Create the cache file
+        std::fs::File::create(&cache_file)?;
+
+        // Create and start the logcat reader
+        let reader = LogcatReader::new(
+            device.serial.clone(),
+            LogcatOptions {
+                clear_before_read: true, // Start with fresh logs
+                ..Default::default()
+            },
+        );
+        reader.start_streaming()?;
+
+        // Get the receiver for log entries
+        let receiver = reader.get_receiver();
+
+        // Create a stop signal for the writer thread
+        let writer_stop_signal = Arc::new(AtomicBool::new(false));
+        let writer_stop_signal_clone = Arc::clone(&writer_stop_signal);
+
+        // Spawn a background thread to write logcat to cache file
+        let cache_file_clone = cache_file.clone();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            use std::fs::OpenOptions;
+            use std::time::Duration;
+            
+            let mut file = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&cache_file_clone) 
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to open logcat cache file: {}", e);
+                    return;
+                }
+            };
+
+            // Use recv_timeout instead of blocking recv to check stop signal periodically
+            while !writer_stop_signal_clone.load(Ordering::Relaxed) {
+                match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(line) => {
+                        if writeln!(file, "{}", line).is_err() {
+                            break;
+                        }
+                        // Flush to ensure data is written to disk immediately
+                        let _ = file.flush();
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        // Continue checking stop signal
+                        continue;
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        // Channel closed, exit thread
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait a bit for initial logs to arrive
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Open as a remote stream (which enables auto-refresh behavior)
+        let tab_id = self.tab_manager.open_remote_stream(
+            logcat_name.clone(),
+            cache_file.clone(),
+            &self.bookmarks_store,
+        )?;
+
+        // Store the reader and stop signal so they stay alive and we can track them
+        self.active_logcat_readers.insert(
+            device.serial.clone(),
+            (reader, cache_file.clone(), tab_id, writer_stop_signal),
+        );
+
+        // Enable auto-scroll for logcat
+        if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
+            state.main_view.scroll_to_bottom();
+            state.main_view.virtual_scroll.state.auto_scroll = true;
+        }
+
+        self.status_bar.set_message(
+            format!("Android logcat started: {}", device.model),
+            StatusLevel::Success,
+        );
+
+        Ok(())
+    }
+
+    /// Connect to Android device over TCP
+    pub fn connect_android_tcp(&mut self, address: String) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.connect_tcp(&address) {
+            Ok(msg) => {
+                self.status_bar.set_message(msg, StatusLevel::Success);
+                self.source_picker_dialog.clear_tcp_connect();
+                // Refresh device list after successful connection
+                self.refresh_android_devices();
+            }
+            Err(e) => {
+                self.source_picker_dialog.set_tcp_connect_error(Some(format!("{}", e)));
+                self.status_bar.set_message(
+                    format!("Failed to connect: {}", e),
+                    StatusLevel::Error,
+                );
+            }
+        }
+    }
+
+    /// Disconnect Android device (TCP only)
+    pub fn disconnect_android_device(&mut self, serial: String) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.disconnect_tcp(&serial) {
+            Ok(msg) => {
+                self.status_bar.set_message(msg, StatusLevel::Success);
+                // Refresh device list after disconnect
+                self.refresh_android_devices();
+            }
+            Err(e) => {
+                self.status_bar.set_message(
+                    format!("Failed to disconnect: {}", e),
+                    StatusLevel::Error,
+                );
+            }
+        }
+    }
+
+    /// Refresh Android devices list
+    pub fn refresh_android_devices(&mut self) {
+        use crate::android_logcat::AdbManager;
+        
+        let manager = AdbManager::new();
+        match manager.list_devices() {
+            Ok(devices) => {
+                self.explorer_panel.update_android_devices(devices.clone());
+                self.status_bar.set_message(
+                    format!("Found {} Android device(s)", devices.len()),
+                    StatusLevel::Info,
+                );
+            }
+            Err(e) => {
+                self.explorer_panel.update_android_devices(Vec::new());
+                self.status_bar.set_message(
+                    format!("ADB: {}. Try 'adb start-server'", e),
+                    StatusLevel::Warning,
+                );
+            }
+        }
+    }
+
     /// Open a log file in split view
     pub fn open_file_in_split(&mut self, path: PathBuf) -> Result<()> {
         // First, try to open the file in a new tab if it's not already open
@@ -441,8 +661,61 @@ impl LoglineApp {
         Ok(())
     }
 
+    /// Clean up a logcat reader by device serial
+    /// This stops the reader, signals the writer thread to stop, and removes from tracking
+    fn cleanup_logcat_reader(&mut self, serial: &str) {
+        use std::sync::atomic::Ordering;
+        
+        if let Some((reader, _cache_path, _tab_id, writer_stop_signal)) = self.active_logcat_readers.remove(serial) {
+            // Signal the writer thread to stop
+            writer_stop_signal.store(true, Ordering::Relaxed);
+            // Stop the logcat reader (this will also close the channel)
+            reader.stop();
+        }
+    }
+
+    /// Clean up logcat reader associated with a tab ID
+    fn cleanup_logcat_reader_for_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
+        let serial_to_remove: Option<String> = self.active_logcat_readers
+            .iter()
+            .find(|(_, (_, _, id, _))| *id == tab_id)
+            .map(|(serial, _)| serial.clone());
+        
+        if let Some(serial) = serial_to_remove {
+            self.cleanup_logcat_reader(&serial);
+        }
+    }
+
+    /// Clean up all logcat readers for multiple tab IDs
+    fn cleanup_logcat_readers_for_tabs(&mut self, tab_ids: &[crate::ui::tab_bar::TabId]) {
+        let serials_to_remove: Vec<String> = self.active_logcat_readers
+            .iter()
+            .filter(|(_, (_, _, id, _))| tab_ids.contains(id))
+            .map(|(serial, _)| serial.clone())
+            .collect();
+        
+        for serial in serials_to_remove {
+            self.cleanup_logcat_reader(&serial);
+        }
+    }
+
+    /// Clean up all logcat readers
+    fn cleanup_all_logcat_readers(&mut self) {
+        use std::sync::atomic::Ordering;
+        
+        for (_, (reader, _cache_path, _tab_id, writer_stop_signal)) in self.active_logcat_readers.drain() {
+            // Signal the writer thread to stop
+            writer_stop_signal.store(true, Ordering::Relaxed);
+            // Stop the logcat reader
+            reader.stop();
+        }
+    }
+
     /// Close a tab by ID
     pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
+        // Clean up logcat reader if this is a logcat tab
+        self.cleanup_logcat_reader_for_tab(tab_id);
+        
         self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
     }
 
@@ -840,7 +1113,7 @@ impl LoglineApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<AppAction> {
         // Check for shortcuts using ctx.input_mut
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.open_file)) {
-            return Some(AppAction::OpenFileDialog);
+            return Some(AppAction::OpenSourcePicker);
         }
 
         // Reload file shortcut (Cmd+Shift+R) - check before toggle_reverse_order (Cmd+R)
@@ -1104,7 +1377,7 @@ impl LoglineApp {
     /// Handle toolbar actions
     fn handle_toolbar_action(&mut self, action: ToolbarAction) -> Option<AppAction> {
         match action {
-            ToolbarAction::OpenFile => Some(AppAction::OpenFileDialog),
+            ToolbarAction::OpenFile => Some(AppAction::OpenSourcePicker),
             ToolbarAction::ReloadFile => {
                 self.reload_file();
                 None
@@ -1189,15 +1462,36 @@ impl LoglineApp {
 }
 
 impl eframe::App for LoglineApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply native rounded corners on Windows (only called once)
         #[cfg(target_os = "windows")]
-        apply_rounded_corners(frame);
-        
+        apply_rounded_corners(_frame);
+
+        // Poll for files sent via Apple Events (macOS Finder "Open With" / default app)
+        // This handles the case where the app is already running when a file is opened.
+        {
+            let mut files_to_open: Vec<PathBuf> = Vec::new();
+            if let Some(ref rx) = self.file_receiver {
+                while let Ok(path) = rx.try_recv() {
+                    files_to_open.push(path);
+                }
+            }
+            for path in files_to_open {
+                match self.open_file(path.clone(), None) {
+                    Ok(_) => {
+                        let msg = format!("{}: {}", t::file_opened_success(), path.display());
+                        self.status_bar.set_message(msg, StatusLevel::Success);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to open file from Apple Event {:?}: {}", path, e);
+                    }
+                }
+            }
+        }
+
         // Handle file drag-and-drop
         ctx.input(|i| {
-            if !i.raw.dropped_files.is_empty() {
-                for file in &i.raw.dropped_files {
+            if !i.raw.dropped_files.is_empty() {                for file in &i.raw.dropped_files {
                     if let Some(path) = &file.path {
                         tracing::info!("File dropped: {:?}", path);
 
@@ -1260,9 +1554,10 @@ impl eframe::App for LoglineApp {
                         // Restore window and focus
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        // Open file dialog
-                        self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
-                        self.file_picker_dialog.show_dialog();
+                        // Open source picker dialog
+                        self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                        self.source_picker_dialog.show_dialog();
                     }
                     TrayEvent::Settings => {
                         // Restore window and focus
@@ -1374,16 +1669,14 @@ impl eframe::App for LoglineApp {
             };
             ctx.set_visuals(visuals);
 
+            // Refresh Android devices on startup (in background to avoid blocking)
+            self.refresh_android_devices();
+
             // Open files passed via command-line arguments
-            let files = std::mem::take(&mut self.initial_files);
-            for path in files {
-                match self.open_file(path.clone(), None) {
-                    Ok(_) => {
-                        tracing::info!("Opened file from CLI: {}", path.display());
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to open file from CLI: {} - {}", path.display(), e);
-                    }
+            let files_to_open: Vec<PathBuf> = self.pending_initial_files.drain(..).collect();
+            for path in files_to_open {
+                if let Err(e) = self.open_file(path.clone(), None) {
+                    tracing::error!("Failed to open initial file {:?}: {}", path, e);
                 }
             }
         }
@@ -1392,11 +1685,21 @@ impl eframe::App for LoglineApp {
         self.tab_manager.process_all_reader_messages();
         
         // Check if any tab needs to load more data (lazy loading)
-        // This is triggered when user scrolls near the top of the loaded data
+        // This is triggered when user scrolls near the top of the loaded data (in normal mode)
+        // or near the bottom of the loaded data (in reverse mode)
         for state in self.tab_manager.states.values_mut() {
             let total_rows = state.buffer.len();
             let visible_range = state.main_view.get_visible_range(total_rows);
-            if state.buffer.should_load_more(visible_range.start) {
+            let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+            
+            // In reverse mode, check if near the end instead of the start
+            let check_position = if reverse_order {
+                visible_range.end
+            } else {
+                visible_range.start
+            };
+            
+            if state.buffer.should_load_more(check_position) {
                 state.request_load_more();
             }
         }
@@ -1436,17 +1739,47 @@ impl eframe::App for LoglineApp {
                     continue;
                 }
                 
-                // Get visible range for on-demand parsing
-                let visible_range = state.main_view.get_visible_range(total_len);
+                // Determine the display row count and index mapping
+                let (display_row_count, filtered_indices) = if state.filter_active {
+                    (state.filtered_indices.len(), Some(state.filtered_indices.as_slice()))
+                } else {
+                    (total_len, None)
+                };
+                
+                if display_row_count == 0 {
+                    continue;
+                }
+                
+                // Get visible range for on-demand parsing (based on displayed rows)
+                let visible_range = state.main_view.get_visible_range(display_row_count);
                 let mut parsed_count = 0;
+                let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
                 
                 // Priority 1: Parse visible entries first
-                for i in visible_range.clone() {
+                for display_row in visible_range.clone() {
                     if parsed_count >= MAX_PARSE_PER_FRAME {
                         break;
                     }
                     
-                    if let Some(entry) = state.buffer.get_mut(i) {
+                    // Convert display_row to logical_row (considering reverse order)
+                    let logical_row = if reverse_order {
+                        display_row_count.saturating_sub(1).saturating_sub(display_row)
+                    } else {
+                        display_row
+                    };
+                    
+                    // Convert logical_row to buffer_idx (considering filtering)
+                    let buffer_idx = if let Some(indices) = filtered_indices {
+                        indices.get(logical_row).copied()
+                    } else {
+                        Some(logical_row)
+                    };
+                    
+                    let Some(buffer_idx) = buffer_idx else {
+                        continue;
+                    };
+                    
+                    if let Some(entry) = state.buffer.get_mut(buffer_idx) {
                         if entry.grok_fields.is_none() {
                             // Use parser.parse_with_format() to support mixed patterns and formatting
                             if let Some((fields, formatted)) =
@@ -1547,14 +1880,17 @@ impl eframe::App for LoglineApp {
             .show(ctx, |ui| {
             let filter_config = self.tab_manager.get_active_state_mut()
                 .map(|state| &mut state.filter.filter);
-            let toolbar_action = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
+            let (toolbar_action, filter_changed) = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
             if let Some(a) = self.handle_toolbar_action(toolbar_action) {
                 action = Some(a);
             }
             
             // Update filter if changed
-            if let Some(state) = self.tab_manager.get_active_state_mut() {
-                state.update_filter();
+            if filter_changed {
+                if let Some(state) = self.tab_manager.get_active_state_mut() {
+                    state.filter.mark_dirty();
+                    state.update_filter();
+                }
             }
         });
 
@@ -1702,16 +2038,40 @@ impl eframe::App for LoglineApp {
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseOtherTabs(keep_id) => {
+                            // Get all tab IDs that will be closed (all except keep_id)
+                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = self.tab_manager.tab_bar.tabs
+                                .iter()
+                                .filter(|tab| tab.id != keep_id)
+                                .map(|tab| tab.id)
+                                .collect();
+                            // Clean up logcat readers for tabs being closed
+                            self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
                             self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseTabsToRight(id) => {
+                            // Get all tab IDs to the right that will be closed
+                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = {
+                                if let Some(index) = self.tab_manager.tab_bar.tabs.iter().position(|tab| tab.id == id) {
+                                    self.tab_manager.tab_bar.tabs
+                                        .iter()
+                                        .skip(index + 1)
+                                        .map(|tab| tab.id)
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                }
+                            };
+                            // Clean up logcat readers for tabs being closed
+                            self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
                             self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseAllTabs => {
+                            // Clean up all logcat readers before closing tabs
+                            self.cleanup_all_logcat_readers();
                             self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
                             self.toolbar_state.split_view_active = false;
                         }
@@ -1854,8 +2214,11 @@ impl eframe::App for LoglineApp {
                                         );
                                     }
                                 }
-                                ExplorerAction::OpenFileDialog => {
-                                    action = Some(AppAction::OpenFileDialog);
+                                ExplorerAction::OpenSourcePicker => {
+                                    action = Some(AppAction::OpenSourcePicker);
+                                }
+                                ExplorerAction::OpenSourcePickerAndroid => {
+                                    action = Some(AppAction::OpenSourcePickerAndroid);
                                 }
                                 ExplorerAction::OpenInSplit(path) => {
                                     if let Err(e) = self.open_file_in_split(path.clone()) {
@@ -1870,21 +2233,6 @@ impl eframe::App for LoglineApp {
                                     ui.ctx().copy_text(abs_path.clone());
                                     self.status_bar.set_message(
                                         format!("{}: {}", t::absolute_path_copied(), abs_path),
-                                        StatusLevel::Info,
-                                    );
-                                }
-                                ExplorerAction::CopyRelativePath(path) => {
-                                    let rel_path = if let Ok(current_dir) = std::env::current_dir() {
-                                        path.strip_prefix(&current_dir)
-                                            .unwrap_or(&path)
-                                            .display()
-                                            .to_string()
-                                    } else {
-                                        path.display().to_string()
-                                    };
-                                    ui.ctx().copy_text(rel_path.clone());
-                                    self.status_bar.set_message(
-                                        format!("{}: {}", t::relative_path_copied(), rel_path),
                                         StatusLevel::Info,
                                     );
                                 }
@@ -1986,6 +2334,17 @@ impl eframe::App for LoglineApp {
                                             StatusLevel::Info,
                                         );
                                     }
+                                }
+                                ExplorerAction::OpenAndroidLogcat(device) => {
+                                    if let Err(e) = self.open_android_logcat(device.clone()) {
+                                        self.status_bar.set_message(
+                                            format!("Failed to open Android logcat: {}", e),
+                                            StatusLevel::Error,
+                                        );
+                                    }
+                                }
+                                ExplorerAction::DisconnectAndroidDevice(serial) => {
+                                    self.disconnect_android_device(serial);
                                 }
                                 ExplorerAction::None => {}
                             }
@@ -2500,7 +2859,9 @@ impl eframe::App for LoglineApp {
                                 let button = egui::Button::new(RichText::new(t::open_file_button()).size(16.0))
                                     .min_size(egui::vec2(180.0, 40.0));
                                 if ui.add(button).clicked() {
-                                    self.file_picker_dialog.show_dialog();
+                                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                                    self.source_picker_dialog.show_dialog();
                                 }
                                 
                                 ui.add_space(40.0);
@@ -2620,27 +2981,51 @@ impl eframe::App for LoglineApp {
             self.show_goto_dialog(ctx);
         }
 
-        // File picker dialog
-        match self.file_picker_dialog.show(ctx) {
-            FilePickerAction::OpenFile(path, encoding) => {
+        // Source picker dialog
+        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+        match self.source_picker_dialog.show(ctx) {
+            SourcePickerAction::OpenFile(path, encoding) => {
                 if let Err(e) = self.open_file(path.clone(), encoding) {
                     self.status_bar
                         .set_message(format!("{}: {}", t::file_open_failed(), e), StatusLevel::Error);
                 }
             }
-            FilePickerAction::Cancel => {}
-            FilePickerAction::None => {}
+            SourcePickerAction::OpenAndroidDevice(device) => {
+                if let Err(e) = self.open_android_logcat(device.clone()) {
+                    self.status_bar.set_message(
+                        format!("Failed to open Android logcat: {}", e),
+                        StatusLevel::Error,
+                    );
+                }
+            }
+            SourcePickerAction::RefreshAndroidDevices => {
+                self.refresh_android_devices();
+            }
+            SourcePickerAction::ConnectAndroidTcp(address) => {
+                self.connect_android_tcp(address);
+            }
+            SourcePickerAction::DisconnectAndroidDevice(serial) => {
+                self.disconnect_android_device(serial);
+            }
+            SourcePickerAction::Cancel => {}
+            SourcePickerAction::None => {}
         }
 
         // Handle actions
         if let Some(action) = action {
             match action {
-                AppAction::OpenFileDialog => {
+                AppAction::OpenSourcePicker => {
                     // Use recent files from config
-                    self.file_picker_dialog.set_recent_files(self.config.recent_files.clone());
-
-                    // Show the new file picker dialog
-                    self.file_picker_dialog.show_dialog();
+                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                    // Show the source picker dialog
+                    self.source_picker_dialog.show_dialog();
+                }
+                AppAction::OpenSourcePickerAndroid => {
+                    // Open source picker with Android tab active
+                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                    self.source_picker_dialog.show_dialog_tab(SourceTab::AndroidDevices);
                 }
                 AppAction::UpdateTheme => {
                     let visuals = match self.config.theme {
@@ -2686,6 +3071,10 @@ impl eframe::App for LoglineApp {
         // Stop remote server
         tracing::info!("Stopping remote server");
         self.remote_server.stop();
+
+        // Clean up all logcat readers
+        tracing::info!("Stopping all logcat readers");
+        self.cleanup_all_logcat_readers();
 
         // Close all tabs (this will stop file watchers)
         tracing::info!("Closing all tabs");
@@ -2764,7 +3153,8 @@ impl LoglineApp {
 /// Application actions
 #[derive(Debug, Clone, Copy)]
 enum AppAction {
-    OpenFileDialog,
+    OpenSourcePicker,
+    OpenSourcePickerAndroid,
     UpdateTheme,
 }
 

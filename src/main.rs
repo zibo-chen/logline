@@ -5,6 +5,7 @@
 //! A cross-platform log viewer application built with Rust and egui,
 //! designed for efficient real-time log monitoring and analysis.
 
+mod android_logcat;
 mod app;
 mod bookmarks;
 mod config;
@@ -23,6 +24,7 @@ mod ui;
 mod virtual_scroll;
 
 mod mcp;
+mod open_file_handler;
 
 use app::LoglineApp;
 use eframe::egui;
@@ -34,7 +36,7 @@ fn main() -> eframe::Result<()> {
 
     tracing::info!("Starting Logline");
 
-    // Collect file paths from command-line arguments (for file association)
+    // Collect files passed as command-line arguments (e.g. `logline file.log`)
     let initial_files: Vec<PathBuf> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))
@@ -45,6 +47,11 @@ fn main() -> eframe::Result<()> {
     if !initial_files.is_empty() {
         tracing::info!("Opening files from command line: {:?}", initial_files);
     }
+
+    // Prepare the channel for file-open events (phase 1 – before eframe starts).
+    // The NSAppleEventManager registration (phase 2) happens inside LoglineApp::new()
+    // after NSApplication has been created by winit.
+    let file_receiver = open_file_handler::create_file_receiver();
 
     // Load icon for window
     let icon_bytes = include_bytes!("../res/icon.png");
@@ -108,7 +115,7 @@ fn main() -> eframe::Result<()> {
             // Install image loaders for egui (required for egui-desktop SVG assets)
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
-            Ok(Box::new(LoglineApp::new(cc, initial_files)))
+            Ok(Box::new(LoglineApp::new(cc, initial_files, file_receiver)))
         }),
     )
 }

@@ -110,15 +110,25 @@ impl LogEntry {
     }
 
     /// Set grok parsed fields and optionally formatted content
+    /// If a 'level' field is present, it will also update the entry's log level
     pub fn set_grok_fields(&mut self, fields: std::collections::HashMap<String, String>) {
+        // If grok extracted a level field, sync it to entry.level for filtering
+        if let Some(level_str) = fields.get("level") {
+            if let Some(level) = LogLevel::from_str(level_str) {
+                self.level = Some(level);
+            }
+        }
         self.grok_fields = Some(fields);
     }
 
     /// Clear grok parsed fields and formatted content
+    /// Also restores the log level to the originally detected value
     pub fn clear_grok_fields(&mut self) {
         self.grok_fields = None;
         self.formatted_content = None;
         self.formatted_segments = None;
+        // Re-detect level from original content
+        self.level = Self::detect_level(&self.content);
     }
 
     /// Get the display content (formatted if available, otherwise original)
