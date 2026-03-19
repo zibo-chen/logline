@@ -58,9 +58,6 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release
-
       - name: Install ImageMagick
         shell: powershell
         run: choco install imagemagick -y --no-progress
@@ -70,6 +67,9 @@ jobs:
         run: |
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           magick res/icon.png -define icon:auto-resize=256,128,64,48,32,16 res/icon.ico
+
+      - name: Build release binary
+        run: cargo build --release
 
       - name: Build installer with Inno Setup
         shell: powershell
@@ -293,3 +293,136 @@ jobs:
             echo "Uploading: $file"
             gh release upload "$TAG" "$file" --clobber
           done
+
+      - name: Update release body with download tables
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          REPO="${{ github.repository }}"
+          DL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          # Get existing release body
+          EXISTING_BODY=$(gh release view "$TAG" --json body -q '.body' 2>/dev/null || echo "")
+
+          # Remove old download table section if re-running
+          CLEAN_BODY=$(echo "$EXISTING_BODY" | sed '/<!-- DOWNLOAD_TABLE_START -->/,/<!-- DOWNLOAD_TABLE_END -->/d')
+
+          # Build download table
+          cat > /tmp/download_table.md << 'HEADER'
+          <!-- DOWNLOAD_TABLE_START -->
+
+          ---
+
+          ## 📦 安装包下载 / Installer Downloads
+
+          ### 🖥️ 桌面安装包 / Desktop Installers
+
+          | 平台 / Platform | 架构 / Arch | 下载 / Download |
+          |:---:|:---:|:---:|
+          HEADER
+
+          # Detect available installer assets and build table rows
+          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
+
+          # Desktop installers
+          for asset in $ASSETS; do
+            case "$asset" in
+              *-windows-*setup.exe)
+                echo "| Windows | x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *-macos-x86_64.dmg)
+                echo "| macOS | x86_64 (Intel) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *-macos-aarch64.dmg)
+                echo "| macOS | aarch64 (Apple Silicon) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *_amd64.deb)
+                echo "| Linux | x86_64 (amd64) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              *_arm64.deb)
+                echo "| Linux | aarch64 (arm64) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+            esac
+          done
+
+          # Portable / Green versions
+          HAS_PORTABLE=false
+          for asset in $ASSETS; do
+            case "$asset" in
+              *.tar.gz|*.tar.xz|*.zip)
+                # Skip checksums and dist-manifest
+                case "$asset" in
+                  *sha256*|*dist-manifest*) continue ;;
+                esac
+                HAS_PORTABLE=true
+                break ;;
+            esac
+          done
+
+          if [ "$HAS_PORTABLE" = true ]; then
+            cat >> /tmp/download_table.md << 'PORTABLE_HEADER'
+
+          ### 📁 绿色版 / Portable (No Install)
+
+          | 平台 / Platform | 架构 / Arch | 下载 / Download |
+          |:---:|:---:|:---:|
+          PORTABLE_HEADER
+
+            for asset in $ASSETS; do
+              case "$asset" in
+                *sha256*|*dist-manifest*) continue ;;
+                *x86_64-pc-windows*.zip)
+                  echo "| Windows | x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *x86_64-apple-darwin*.tar.gz|*x86_64-apple-darwin*.tar.xz)
+                  echo "| macOS | x86_64 (Intel) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *aarch64-apple-darwin*.tar.gz|*aarch64-apple-darwin*.tar.xz)
+                  echo "| macOS | aarch64 (Apple Silicon) | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *x86_64-unknown-linux*.tar.gz|*x86_64-unknown-linux*.tar.xz)
+                  echo "| Linux | x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *aarch64-unknown-linux*.tar.gz|*aarch64-unknown-linux*.tar.xz)
+                  echo "| Linux | aarch64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              esac
+            done
+          fi
+
+          # Android packages
+          HAS_ANDROID=false
+          for asset in $ASSETS; do
+            case "$asset" in
+              *.apk)
+                HAS_ANDROID=true
+                break ;;
+            esac
+          done
+
+          if [ "$HAS_ANDROID" = true ]; then
+            cat >> /tmp/download_table.md << 'ANDROID_HEADER'
+
+          ### 📱 安卓 / Android
+
+          | 架构 / Arch | 下载 / Download |
+          |:---:|:---:|
+          ANDROID_HEADER
+
+            for asset in $ASSETS; do
+              case "$asset" in
+                *arm64*.apk|*aarch64*.apk)
+                  echo "| arm64-v8a | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *armeabi*.apk|*armv7*.apk)
+                  echo "| armeabi-v7a | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *x86_64*.apk)
+                  echo "| x86_64 | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+                *universal*.apk|*.apk)
+                  echo "| Universal | [${asset}](${DL}/${asset}) |" >> /tmp/download_table.md ;;
+              esac
+            done
+          fi
+
+          echo "" >> /tmp/download_table.md
+          echo "<!-- DOWNLOAD_TABLE_END -->" >> /tmp/download_table.md
+
+          # Combine existing body + download table
+          {
+            echo "$CLEAN_BODY"
+            echo ""
+            cat /tmp/download_table.md
+          } > /tmp/release_body.md
+
+          # Update release body
+          gh release edit "$TAG" --notes-file /tmp/release_body.md
