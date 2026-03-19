@@ -1,0 +1,292 @@
+# Platform Installers workflow
+# Builds native installers for Windows (.exe), macOS (.dmg), and Linux (.deb)
+# when a release tag is pushed. All installers register .log file association.
+
+name: Platform Installers
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g., 1.4.2)'
+        required: false
+        type: string
+
+jobs:
+  # ───────────────────────── Extract version ─────────────────────────
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+  # ───────────────────────── Windows Installer ─────────────────────────
+  windows-installer:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Install ImageMagick
+        shell: powershell
+        run: choco install imagemagick -y --no-progress
+
+      - name: Convert PNG icon to ICO
+        shell: powershell
+        run: |
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          magick res/icon.png -define icon:auto-resize=256,128,64,48,32,16 res/icon.ico
+
+      - name: Build installer with Inno Setup
+        shell: powershell
+        run: |
+          $InnoSetup = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $InnoSetup)) {
+            $InnoSetup = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $InnoSetup)) {
+            Write-Error "Inno Setup not found!"
+            exit 1
+          }
+          & $InnoSetup /DAppVersion="${{ needs.prepare.outputs.version }}" installer\windows\logline.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: target/installer/logline-*.exe
+
+  # ───────────────────────── macOS DMG (x86_64) ─────────────────────────
+  macos-dmg-x86_64:
+    needs: prepare
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build DMG
+        run: |
+          chmod +x installer/macos/build-macos.sh
+          installer/macos/build-macos.sh "${{ needs.prepare.outputs.version }}" x86_64
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-x86_64
+          path: target/installer/logline-*.dmg
+
+  # ───────────────────────── macOS DMG (aarch64) ─────────────────────────
+  macos-dmg-aarch64:
+    needs: prepare
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build DMG
+        run: |
+          chmod +x installer/macos/build-macos.sh
+          installer/macos/build-macos.sh "${{ needs.prepare.outputs.version }}" aarch64
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-aarch64
+          path: target/installer/logline-*.dmg
+
+  # ───────────────────────── Linux deb (x86_64) ─────────────────────────
+  linux-deb-x86_64:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev pkg-config libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev \
+            libxdo-dev imagemagick dpkg-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build deb package
+        run: |
+          chmod +x installer/linux/build-deb.sh
+          installer/linux/build-deb.sh "${{ needs.prepare.outputs.version }}" x86_64
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-x86_64
+          path: target/installer/logline_*.deb
+
+  # ───────────────────────── Linux deb (aarch64) ─────────────────────────
+  linux-deb-aarch64:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            pkg-config dpkg-dev imagemagick
+          # Install aarch64 libraries
+          sudo dpkg --add-architecture arm64
+          # Add arm64 repo sources
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev:arm64 libxcb-render0-dev:arm64 \
+            libxcb-shape0-dev:arm64 libxcb-xfixes0-dev:arm64 libxkbcommon-dev:arm64 \
+            libssl-dev:arm64 libxdo-dev:arm64 || true
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_SYSROOT_DIR: /usr/aarch64-linux-gnu
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Build deb package
+        run: |
+          chmod +x installer/linux/build-deb.sh
+          installer/linux/build-deb.sh "${{ needs.prepare.outputs.version }}" aarch64
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-aarch64
+          path: target/installer/logline_*.deb
+
+  # ───────────────────────── Upload to Release ─────────────────────────
+  upload-release:
+    needs:
+      - prepare
+      - windows-installer
+      - macos-dmg-x86_64
+      - macos-dmg-aarch64
+      - linux-deb-x86_64
+      - linux-deb-aarch64
+    if: ${{ always() && needs.prepare.result == 'success' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: '{windows-installer,macos-dmg-*,linux-deb-*}'
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Wait for GitHub Release
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          for i in {1..30}; do
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "Release $TAG found"
+              exit 0
+            fi
+            echo "Waiting for release $TAG... (attempt $i/30)"
+            sleep 10
+          done
+          echo "Release not found, creating it"
+          gh release create "$TAG" --title "$TAG" --generate-notes
+
+      - name: Upload installers to Release
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          for file in artifacts/*; do
+            [ -f "$file" ] || continue
+            echo "Uploading: $file"
+            gh release upload "$TAG" "$file" --clobber
+          done

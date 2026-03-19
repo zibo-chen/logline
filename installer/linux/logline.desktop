@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Logline
+Comment=High-performance real-time log viewer
+Exec=logline %F
+Icon=logline
+Terminal=false
+Type=Application
+Categories=Utility;Development;System;
+MimeType=text/x-log;text/plain;
+Keywords=log;viewer;tail;monitor;
+StartupNotify=true
+StartupWMClass=logline

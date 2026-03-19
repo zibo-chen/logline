@@ -26,12 +26,25 @@ mod mcp;
 
 use app::LoglineApp;
 use eframe::egui;
+use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
     tracing::info!("Starting Logline");
+
+    // Collect file paths from command-line arguments (for file association)
+    let initial_files: Vec<PathBuf> = std::env::args()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-'))
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .collect();
+
+    if !initial_files.is_empty() {
+        tracing::info!("Opening files from command line: {:?}", initial_files);
+    }
 
     // Load icon for window
     let icon_bytes = include_bytes!("../res/icon.png");
@@ -95,7 +108,7 @@ fn main() -> eframe::Result<()> {
             // Install image loaders for egui (required for egui-desktop SVG assets)
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
-            Ok(Box::new(LoglineApp::new(cc)))
+            Ok(Box::new(LoglineApp::new(cc, initial_files)))
         }),
     )
 }

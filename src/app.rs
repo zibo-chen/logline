@@ -120,11 +120,14 @@ pub struct LoglineApp {
     // === Custom Titlebar ===
     /// Custom title bar for the window
     title_bar: TitleBar,
+
+    /// Files to open on startup (from command-line arguments)
+    initial_files: Vec<PathBuf>,
 }
 
 impl LoglineApp {
     /// Create a new application instance
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial_files: Vec<PathBuf>) -> Self {
         // Load configuration
         let config = AppConfig::load().unwrap_or_default();
 
@@ -294,6 +297,8 @@ impl LoglineApp {
             tokio_runtime,
             // First frame flag for initial theme application
             first_frame: true,
+            // Files to open from command-line
+            initial_files,
             // System tray - will be initialized after event loop starts
             tray_manager: None,
             should_quit: false,
@@ -1368,6 +1373,19 @@ impl eframe::App for LoglineApp {
                 Theme::Light => egui::Visuals::light(),
             };
             ctx.set_visuals(visuals);
+
+            // Open files passed via command-line arguments
+            let files = std::mem::take(&mut self.initial_files);
+            for path in files {
+                match self.open_file(path.clone(), None) {
+                    Ok(_) => {
+                        tracing::info!("Opened file from CLI: {}", path.display());
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to open file from CLI: {} - {}", path.display(), e);
+                    }
+                }
+            }
         }
 
         // Process background messages for all tabs
