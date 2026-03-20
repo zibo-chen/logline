@@ -21,6 +21,7 @@ mod remote_server;
 mod search;
 mod tray;
 mod ui;
+mod updater;
 mod virtual_scroll;
 
 mod mcp;

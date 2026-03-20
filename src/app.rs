@@ -19,12 +19,13 @@ use crate::ui::global_search_panel::{GlobalSearchAction, GlobalSearchPanel};
 use crate::ui::grok_panel::{GrokPanel, GrokPanelAction};
 use crate::ui::main_view::ContextMenuAction;
 use crate::ui::search_bar::{SearchBar, SearchBarAction};
-use crate::ui::settings_panel::{SettingsAction, SettingsPanel};
+use crate::ui::settings_panel::{SettingsAction, SettingsPanel, UpdateUiState};
 use crate::ui::source_picker_dialog::{SourcePickerAction, SourcePickerDialog, SourceTab};
 use crate::ui::status_bar::{StatusBar, StatusLevel};
 use crate::ui::tab_bar::TabBarAction;
 use crate::ui::tab_manager::TabManager;
 use crate::ui::toolbar::{Toolbar, ToolbarAction, ToolbarState};
+use crate::updater::{self, PreparedUpdate, ReleaseInfo, UpdateEvent};
 
 use crate::mcp::{McpConfig, McpServer};
 
@@ -35,6 +36,7 @@ use egui::RichText;
 use egui_desktop::{apply_rounded_corners, render_resize_handles};
 use egui_desktop::{ThemeMode, TitleBar, TitleBarOptions};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 /// Main application state
@@ -145,6 +147,16 @@ pub struct LoglineApp {
     pending_initial_files: Vec<PathBuf>,
     /// Receives file paths from Apple Events (macOS Finder "Open With")
     file_receiver: Option<std::sync::mpsc::Receiver<PathBuf>>,
+    /// Updater event sender
+    update_sender: Sender<UpdateEvent>,
+    /// Updater event receiver
+    update_receiver: Receiver<UpdateEvent>,
+    /// Current updater state
+    update_state: AppUpdateState,
+    /// Whether update checks were initiated by the user
+    update_check_manual: bool,
+    /// Whether the update dialog is currently visible
+    show_update_dialog: bool,
 }
 
 impl LoglineApp {
@@ -194,6 +206,9 @@ impl LoglineApp {
         settings_panel.server_port = config.remote_server.port.to_string();
         settings_panel.enable_remote_service = config.remote_server.enabled;
         settings_panel.close_button_behavior = config.window.close_button_behavior;
+        settings_panel.auto_check_updates = config.update.auto_check_on_startup;
+
+        let (update_sender, update_receiver) = mpsc::channel();
 
         // Initialize MCP server if enabled
         let (mcp_server, tokio_runtime) = {
@@ -346,7 +361,211 @@ impl LoglineApp {
             // Files to open on startup
             pending_initial_files: initial_files,
             file_receiver: Some(file_receiver),
+            update_sender,
+            update_receiver,
+            update_state: AppUpdateState::Idle,
+            update_check_manual: false,
+            show_update_dialog: false,
         }
+    }
+
+    fn start_update_check(&mut self, manual: bool) {
+        if matches!(
+            self.update_state,
+            AppUpdateState::Checking
+                | AppUpdateState::Downloading(_)
+                | AppUpdateState::Installing(_)
+        ) {
+            return;
+        }
+
+        self.update_check_manual = manual;
+        self.update_state = AppUpdateState::Checking;
+        updater::start_check_for_updates(self.update_sender.clone());
+    }
+
+    fn start_update_install(&mut self) {
+        let AppUpdateState::Available(release) = self.update_state.clone() else {
+            return;
+        };
+
+        self.update_state = AppUpdateState::Downloading(release.version.clone());
+        self.show_update_dialog = true;
+        updater::start_download_update(release, self.update_sender.clone());
+    }
+
+    fn poll_update_events(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.update_receiver.try_recv() {
+            match event {
+                UpdateEvent::CheckCompleted(result) => match result {
+                    Ok(Some(release)) => {
+                        let version = release.version.clone();
+                        self.update_state = AppUpdateState::Available(release);
+                        self.show_update_dialog = true;
+                        self.status_bar.set_message(
+                            format!("{} {}", t::update_available(), version),
+                            StatusLevel::Warning,
+                        );
+                    }
+                    Ok(None) => {
+                        self.update_state = AppUpdateState::UpToDate;
+                        if self.update_check_manual {
+                            self.status_bar
+                                .set_message(t::already_latest_version(), StatusLevel::Success);
+                        }
+                    }
+                    Err(err) => {
+                        self.update_state = AppUpdateState::Error(err.clone());
+                        self.status_bar.set_message(
+                            format!("{}: {}", t::update_check_failed(), err),
+                            StatusLevel::Error,
+                        );
+                    }
+                },
+                UpdateEvent::DownloadCompleted(result) => match result {
+                    Ok(prepared) => {
+                        if let Err(err) = self.install_prepared_update(ctx, prepared) {
+                            self.update_state = AppUpdateState::Error(err.to_string());
+                            self.status_bar.set_message(
+                                format!("{}: {}", t::update_install_failed(), err),
+                                StatusLevel::Error,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        self.update_state = AppUpdateState::Error(err.clone());
+                        self.status_bar.set_message(
+                            format!("{}: {}", t::update_download_failed(), err),
+                            StatusLevel::Error,
+                        );
+                    }
+                },
+            }
+        }
+    }
+
+    fn install_prepared_update(
+        &mut self,
+        ctx: &egui::Context,
+        prepared: PreparedUpdate,
+    ) -> Result<()> {
+        let version = prepared.release.version.clone();
+        self.update_state = AppUpdateState::Installing(version.clone());
+        updater::launch_installer(&prepared.file_path)?;
+        self.status_bar.set_message(
+            format!("{} {}", t::launching_update_installer(), version),
+            StatusLevel::Success,
+        );
+        self.should_quit = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        Ok(())
+    }
+
+    fn update_status_text(&self) -> String {
+        match &self.update_state {
+            AppUpdateState::Idle => t::update_not_checked().to_string(),
+            AppUpdateState::Checking => t::checking_for_updates().to_string(),
+            AppUpdateState::UpToDate => {
+                format!(
+                    "{} {}",
+                    t::already_latest_version(),
+                    updater::CURRENT_VERSION
+                )
+            }
+            AppUpdateState::Available(release) => {
+                format!("{} {}", t::update_available(), release.version)
+            }
+            AppUpdateState::Downloading(version) => {
+                format!("{} {}", t::downloading_update(), version)
+            }
+            AppUpdateState::Installing(version) => {
+                format!("{} {}", t::launching_update_installer(), version)
+            }
+            AppUpdateState::Error(err) => format!("{}: {}", t::update_check_failed(), err),
+        }
+    }
+
+    fn show_update_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_update_dialog {
+            return;
+        }
+
+        let mut open = self.show_update_dialog;
+        let update_state = self.update_state.clone();
+        egui::Window::new(t::update_dialog_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| match &update_state {
+                AppUpdateState::Available(release) => {
+                    ui.label(format!(
+                        "{} {}  {} {}",
+                        t::current_version(),
+                        updater::CURRENT_VERSION,
+                        t::latest_version(),
+                        release.version
+                    ));
+                    if let Some(published_at) = &release.published_at {
+                        ui.label(format!("{} {}", t::release_date(), published_at));
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(t::release_notes()).strong());
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            let notes = if release.notes.is_empty() {
+                                t::release_notes_empty()
+                            } else {
+                                &release.notes
+                            };
+                            ui.label(notes);
+                        });
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(t::install_update()).clicked() {
+                            self.start_update_install();
+                        }
+                        if ui.button(t::view_release_notes()).clicked() {
+                            let _ = updater::open_in_browser(&release.html_url);
+                        }
+                        if ui.button(t::later()).clicked() {
+                            self.show_update_dialog = false;
+                        }
+                    });
+                }
+                AppUpdateState::Downloading(version) => {
+                    ui.label(format!("{} {}", t::downloading_update(), version));
+                    ui.add_space(8.0);
+                    ui.spinner();
+                }
+                AppUpdateState::Installing(version) => {
+                    ui.label(format!("{} {}", t::launching_update_installer(), version));
+                    ui.add_space(8.0);
+                    ui.spinner();
+                }
+                AppUpdateState::Error(err) => {
+                    ui.label(format!("{}: {}", t::update_check_failed(), err));
+                    ui.add_space(12.0);
+                    if ui.button(t::close()).clicked() {
+                        self.show_update_dialog = false;
+                    }
+                }
+                _ => {
+                    self.show_update_dialog = false;
+                }
+            });
+
+        self.show_update_dialog = open
+            && matches!(
+                self.update_state,
+                AppUpdateState::Available(_)
+                    | AppUpdateState::Downloading(_)
+                    | AppUpdateState::Installing(_)
+                    | AppUpdateState::Error(_)
+            );
     }
 
     fn mark_config_dirty(&mut self) {
@@ -1555,6 +1774,8 @@ impl eframe::App for LoglineApp {
         #[cfg(target_os = "windows")]
         apply_rounded_corners(_frame);
 
+        self.poll_update_events(ctx);
+
         // Poll for files sent via Apple Events (macOS Finder "Open With" / default app)
         // This handles the case where the app is already running when a file is opened.
         {
@@ -1762,6 +1983,10 @@ impl eframe::App for LoglineApp {
             // Refresh Android devices on startup (in background to avoid blocking)
             self.refresh_android_devices();
 
+            if self.config.update.auto_check_on_startup {
+                self.start_update_check(false);
+            }
+
             // Open files passed via command-line arguments
             let files_to_open: Vec<PathBuf> = self.pending_initial_files.drain(..).collect();
             for path in files_to_open {
@@ -1770,6 +1995,8 @@ impl eframe::App for LoglineApp {
                 }
             }
         }
+
+        self.show_update_dialog(ctx);
 
         // Process background messages for all tabs
         self.tab_manager.process_all_reader_messages();
@@ -2686,7 +2913,32 @@ impl eframe::App for LoglineApp {
                             }
                         }
                         ActivityView::Settings => {
-                            match self.settings_panel.show(ui) {
+                            let update_status_text = self.update_status_text();
+                            let latest_version = match &self.update_state {
+                                AppUpdateState::Available(release) => Some(release.version.as_str()),
+                                AppUpdateState::Downloading(version)
+                                | AppUpdateState::Installing(version) => Some(version.as_str()),
+                                _ => None,
+                            };
+                            let release_url = match &self.update_state {
+                                AppUpdateState::Available(release) => Some(release.html_url.as_str()),
+                                _ => None,
+                            };
+                            match self.settings_panel.show(
+                                ui,
+                                UpdateUiState {
+                                    current_version: updater::CURRENT_VERSION,
+                                    latest_version,
+                                    status_text: &update_status_text,
+                                    checking: matches!(self.update_state, AppUpdateState::Checking),
+                                    installing: matches!(
+                                        self.update_state,
+                                        AppUpdateState::Downloading(_) | AppUpdateState::Installing(_)
+                                    ),
+                                    can_install: matches!(self.update_state, AppUpdateState::Available(_)),
+                                    release_url,
+                                },
+                            ) {
                                 SettingsAction::ThemeChanged(dark) => {
                                     self.config.theme =
                                         if dark { Theme::Dark } else { Theme::Light };
@@ -2788,6 +3040,24 @@ impl eframe::App for LoglineApp {
                                         t::settings_saved(),
                                         StatusLevel::Info,
                                     );
+                                }
+                                SettingsAction::AutoCheckUpdatesChanged(enabled) => {
+                                    self.config.update.auto_check_on_startup = enabled;
+                                    self.mark_config_dirty();
+                                }
+                                SettingsAction::CheckForUpdates => {
+                                    self.start_update_check(true);
+                                }
+                                SettingsAction::InstallUpdate => {
+                                    self.start_update_install();
+                                }
+                                SettingsAction::OpenReleasePage(url) => {
+                                    if let Err(err) = updater::open_in_browser(&url) {
+                                        self.status_bar.set_message(
+                                            format!("{}: {}", t::failed_to_open_link(), err),
+                                            StatusLevel::Error,
+                                        );
+                                    }
                                 }
                                 _ => {}
                             }
@@ -3276,6 +3546,17 @@ enum AppAction {
     OpenSourcePicker,
     OpenSourcePickerAndroid,
     UpdateTheme,
+}
+
+#[derive(Debug, Clone)]
+enum AppUpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(ReleaseInfo),
+    Downloading(String),
+    Installing(String),
+    Error(String),
 }
 
 /// Go-to-line dialog state

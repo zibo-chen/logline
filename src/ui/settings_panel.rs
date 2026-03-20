@@ -6,6 +6,17 @@ use crate::config::{CloseButtonBehavior, DisplayConfig};
 use crate::i18n::{Language, Translations as t};
 use egui::{RichText, Ui};
 
+/// Update-related UI state supplied by the app
+pub struct UpdateUiState<'a> {
+    pub current_version: &'a str,
+    pub latest_version: Option<&'a str>,
+    pub status_text: &'a str,
+    pub checking: bool,
+    pub installing: bool,
+    pub can_install: bool,
+    pub release_url: Option<&'a str>,
+}
+
 /// Settings panel state
 pub struct SettingsPanel {
     /// Server port (editable)
@@ -26,6 +37,8 @@ pub struct SettingsPanel {
     pub mcp_port: String,
     /// Close button behavior
     pub close_button_behavior: CloseButtonBehavior,
+    /// Whether to auto-check updates on startup
+    pub auto_check_updates: bool,
 }
 
 impl Default for SettingsPanel {
@@ -53,11 +66,12 @@ impl SettingsPanel {
             mcp_enabled: false,
             mcp_port: "12600".to_string(),
             close_button_behavior: CloseButtonBehavior::Ask,
+            auto_check_updates: true,
         }
     }
 
     /// Render the settings panel
-    pub fn show(&mut self, ui: &mut Ui) -> SettingsAction {
+    pub fn show(&mut self, ui: &mut Ui, update_ui: UpdateUiState<'_>) -> SettingsAction {
         let mut action = SettingsAction::None;
 
         // Set minimum width to prevent panel from shrinking
@@ -307,22 +321,82 @@ impl SettingsPanel {
             ui.separator();
             ui.add_space(8.0);
 
+            // Update settings
+            ui.label(RichText::new(format!("⬆ {}", t::updates())).strong());
+            ui.add_space(4.0);
+
+            ui.label(format!("{} {}", t::current_version(), update_ui.current_version));
+
+            if let Some(latest_version) = update_ui.latest_version {
+                ui.label(format!("{} {}", t::latest_version(), latest_version));
+            }
+
+            if ui
+                .checkbox(&mut self.auto_check_updates, t::auto_check_updates())
+                .changed()
+            {
+                action = SettingsAction::AutoCheckUpdatesChanged(self.auto_check_updates);
+            }
+
+            ui.label(RichText::new(update_ui.status_text).weak());
+
+            ui.horizontal(|ui| {
+                let check_label = if update_ui.checking {
+                    t::checking_for_updates()
+                } else {
+                    t::check_for_updates()
+                };
+                if ui
+                    .add_enabled(
+                        !update_ui.checking && !update_ui.installing,
+                        egui::Button::new(check_label),
+                    )
+                    .clicked()
+                {
+                    action = SettingsAction::CheckForUpdates;
+                }
+
+                if ui
+                    .add_enabled(
+                        update_ui.can_install && !update_ui.installing,
+                        egui::Button::new(if update_ui.installing {
+                            t::downloading_update()
+                        } else {
+                            t::install_update()
+                        }),
+                    )
+                    .clicked()
+                {
+                    action = SettingsAction::InstallUpdate;
+                }
+
+                if let Some(url) = update_ui.release_url {
+                    if ui.button(t::view_release_notes()).clicked() {
+                        action = SettingsAction::OpenReleasePage(url.to_string());
+                    }
+                }
+            });
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+
             // About section
             ui.label(RichText::new(format!("ℹ {}", t::about())).strong());
             ui.add_space(4.0);
 
-            ui.label("Logline v0.1.0");
+            ui.label(format!("Logline v{}", update_ui.current_version));
             ui.label(RichText::new(t::app_description()).weak());
 
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
                 if ui.link("GitHub").clicked() {
-                    // Open GitHub link
+                    action = SettingsAction::OpenReleasePage(crate::updater::REPOSITORY_URL.to_string());
                 }
                 ui.label(" | ");
                 if ui.link(t::documentation()).clicked() {
-                    // Open docs link
+                    action = SettingsAction::OpenReleasePage(crate::updater::REPOSITORY_URL.to_string());
                 }
             });
         });
@@ -354,4 +428,8 @@ pub enum SettingsAction {
     McpEnabledChanged(bool),
     McpPortChanged,
     CloseButtonBehaviorChanged(CloseButtonBehavior),
+    AutoCheckUpdatesChanged(bool),
+    CheckForUpdates,
+    InstallUpdate,
+    OpenReleasePage(String),
 }

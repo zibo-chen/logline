@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub mcp: McpServerConfig,
     /// Remote server configuration
     pub remote_server: RemoteServerConfig,
+    /// Application update configuration
+    pub update: UpdateConfig,
     /// Grok parser configuration
     pub grok: GrokConfig,
     /// Recent files list
@@ -45,6 +47,7 @@ impl Default for AppConfig {
             buffer: BufferConfig::default(),
             mcp: McpServerConfig::default(),
             remote_server: RemoteServerConfig::default(),
+            update: UpdateConfig::default(),
             grok: GrokConfig::default(),
             recent_files: Vec::new(),
             max_recent_files: 10,
@@ -52,6 +55,22 @@ impl Default for AppConfig {
             file_grok_configs: HashMap::new(),
             theme: Theme::Dark,
             language: Language::default(),
+        }
+    }
+}
+
+/// Application update configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Whether to check GitHub Releases for updates on startup
+    pub auto_check_on_startup: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check_on_startup: true,
         }
     }
 }

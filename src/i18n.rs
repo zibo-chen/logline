@@ -1925,6 +1925,161 @@ impl Translations {
             Language::Chinese => "管理设备...",
         }
     }
+
+    // ============ Updates ============
+    pub fn updates() -> &'static str {
+        match current_language() {
+            Language::English => "Updates",
+            Language::Chinese => "更新",
+        }
+    }
+
+    pub fn current_version() -> &'static str {
+        match current_language() {
+            Language::English => "Current version:",
+            Language::Chinese => "当前版本:",
+        }
+    }
+
+    pub fn latest_version() -> &'static str {
+        match current_language() {
+            Language::English => "Latest version:",
+            Language::Chinese => "最新版本:",
+        }
+    }
+
+    pub fn auto_check_updates() -> &'static str {
+        match current_language() {
+            Language::English => "Check for updates on startup",
+            Language::Chinese => "启动时自动检查更新",
+        }
+    }
+
+    pub fn check_for_updates() -> &'static str {
+        match current_language() {
+            Language::English => "Check for Updates",
+            Language::Chinese => "检查更新",
+        }
+    }
+
+    pub fn checking_for_updates() -> &'static str {
+        match current_language() {
+            Language::English => "Checking for updates...",
+            Language::Chinese => "正在检查更新...",
+        }
+    }
+
+    pub fn update_not_checked() -> &'static str {
+        match current_language() {
+            Language::English => "Update status not checked yet",
+            Language::Chinese => "尚未检查更新",
+        }
+    }
+
+    pub fn already_latest_version() -> &'static str {
+        match current_language() {
+            Language::English => "Already on the latest version",
+            Language::Chinese => "已经是最新版本",
+        }
+    }
+
+    pub fn update_available() -> &'static str {
+        match current_language() {
+            Language::English => "Update available:",
+            Language::Chinese => "发现新版本:",
+        }
+    }
+
+    pub fn install_update() -> &'static str {
+        match current_language() {
+            Language::English => "Update Now",
+            Language::Chinese => "立即更新",
+        }
+    }
+
+    pub fn downloading_update() -> &'static str {
+        match current_language() {
+            Language::English => "Downloading update...",
+            Language::Chinese => "正在下载更新...",
+        }
+    }
+
+    pub fn update_check_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Update check failed",
+            Language::Chinese => "检查更新失败",
+        }
+    }
+
+    pub fn update_download_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Update download failed",
+            Language::Chinese => "下载更新失败",
+        }
+    }
+
+    pub fn update_install_failed() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to start installer",
+            Language::Chinese => "启动安装器失败",
+        }
+    }
+
+    pub fn launching_update_installer() -> &'static str {
+        match current_language() {
+            Language::English => "Launching installer for",
+            Language::Chinese => "正在启动安装器:",
+        }
+    }
+
+    pub fn view_release_notes() -> &'static str {
+        match current_language() {
+            Language::English => "Release Notes",
+            Language::Chinese => "发行说明",
+        }
+    }
+
+    pub fn update_dialog_title() -> &'static str {
+        match current_language() {
+            Language::English => "New Version Available",
+            Language::Chinese => "发现新版本",
+        }
+    }
+
+    pub fn release_notes() -> &'static str {
+        match current_language() {
+            Language::English => "What's New",
+            Language::Chinese => "更新内容",
+        }
+    }
+
+    pub fn release_notes_empty() -> &'static str {
+        match current_language() {
+            Language::English => "No release notes provided.",
+            Language::Chinese => "当前版本没有提供发行说明。",
+        }
+    }
+
+    pub fn release_date() -> &'static str {
+        match current_language() {
+            Language::English => "Published:",
+            Language::Chinese => "发布时间:",
+        }
+    }
+
+    pub fn later() -> &'static str {
+        match current_language() {
+            Language::English => "Later",
+            Language::Chinese => "稍后",
+        }
+    }
+
+    pub fn failed_to_open_link() -> &'static str {
+        match current_language() {
+            Language::English => "Failed to open link",
+            Language::Chinese => "打开链接失败",
+        }
+    }
 }
 
 /// Convenient macro for translations

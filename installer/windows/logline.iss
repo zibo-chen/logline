@@ -31,6 +31,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 PrivilegesRequired=admin
+CloseApplications=yes
+RestartApplications=no
 ChangesAssociations=yes
 MinVersion=10.0
 
