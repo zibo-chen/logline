@@ -123,9 +123,10 @@ impl TabState {
         // Read initial content using tail mode for better performance with large files
         let initial_lines = self.buffer.chunk_size() * 2; // Load ~10k lines initially
         let (entries, start_offset, total_lines) = reader.read_tail(initial_lines)?;
-        
+
         // Initialize buffer with lazy load state
-        self.buffer.init_with_tail(entries, start_offset, total_lines);
+        self.buffer
+            .init_with_tail(entries, start_offset, total_lines);
 
         // Restore bookmarks for this file
         if let Some(file_bookmarks) = bookmarks_store.get_bookmarks(&self.path) {
@@ -209,7 +210,8 @@ impl TabState {
                     // Load previous chunk for lazy loading
                     match reader.read_previous_chunk(before_offset, max_lines) {
                         Ok((entries, new_start_offset)) if !entries.is_empty() => {
-                            let _ = msg_tx.send(ReaderMessage::PreviousChunk(entries, new_start_offset));
+                            let _ = msg_tx
+                                .send(ReaderMessage::PreviousChunk(entries, new_start_offset));
                         }
                         Ok(_) => {
                             // No more data to load
@@ -305,11 +307,11 @@ impl TabState {
             self.buffer.lazy_load.loaded_start_offset = new_start_offset;
             self.buffer.lazy_load.first_loaded_line = self.buffer.first_line_number();
             self.buffer.lazy_load.load_more_requested = false;
-            
+
             // Adjust grok_parse_progress since we prepended items
             // The existing parsed items are now at higher indices
             self.grok_parse_progress += prepend_count;
-            
+
             self.filter.mark_dirty();
             self.pending_entries += 1;
         }
@@ -334,18 +336,21 @@ impl TabState {
 
     /// Request to load more data (for lazy loading when scrolling up)
     pub fn request_load_more(&mut self) {
-        if !self.buffer.lazy_load.enabled 
-            || self.buffer.lazy_load.fully_loaded 
-            || self.buffer.lazy_load.loading_in_progress 
+        if !self.buffer.lazy_load.enabled
+            || self.buffer.lazy_load.fully_loaded
+            || self.buffer.lazy_load.loading_in_progress
         {
             return;
         }
-        
+
         if let Some(tx) = &self.reader_tx {
             let before_offset = self.buffer.lazy_load.loaded_start_offset;
             let chunk_size = self.buffer.chunk_size();
-            
-            if tx.try_send(ReaderCommand::LoadPreviousChunk(before_offset, chunk_size)).is_ok() {
+
+            if tx
+                .try_send(ReaderCommand::LoadPreviousChunk(before_offset, chunk_size))
+                .is_ok()
+            {
                 self.buffer.lazy_load.loading_in_progress = true;
                 self.buffer.lazy_load.load_more_requested = false;
             }

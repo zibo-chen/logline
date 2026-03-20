@@ -60,13 +60,11 @@ impl ExplorerPanel {
                 // Header with open button
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(t::explorer_header()).strong().size(13.0));
-                    
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Plus button to open source picker
-                        let btn = ui.add(
-                            egui::Button::new(RichText::new("➕").size(14.0))
-                                .frame(false)
-                        );
+                        let btn =
+                            ui.add(egui::Button::new(RichText::new("➕").size(14.0)).frame(false));
                         if btn.clicked() {
                             action = ExplorerAction::OpenSourcePicker;
                         }
@@ -91,11 +89,13 @@ impl ExplorerPanel {
                                     .map(|n| n.to_string_lossy().to_string())
                                     .unwrap_or_else(|| path.display().to_string());
 
-                                let response = ui.horizontal(|ui| {
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new("📄").size(11.0));
-                                    ui.selectable_label(false, RichText::new(&name).size(11.0))
-                                }).inner;
+                                let response = ui
+                                    .horizontal(|ui| {
+                                        ui.add_space(4.0);
+                                        ui.label(RichText::new("📄").size(11.0));
+                                        ui.selectable_label(false, RichText::new(&name).size(11.0))
+                                    })
+                                    .inner;
 
                                 if response.clicked() {
                                     action = ExplorerAction::OpenLocalFile(path.clone());
@@ -107,7 +107,10 @@ impl ExplorerPanel {
                                 response.context_menu(|ui| {
                                     ui.set_min_width(180.0);
 
-                                    if ui.button(format!("📂  {}", t::open_file_context())).clicked() {
+                                    if ui
+                                        .button(format!("📂  {}", t::open_file_context()))
+                                        .clicked()
+                                    {
                                         action = ExplorerAction::OpenLocalFile(path.clone());
                                         ui.close();
                                     }
@@ -119,12 +122,16 @@ impl ExplorerPanel {
 
                                     ui.separator();
 
-                                    if ui.button(format!("📋  {}", t::copy_absolute_path())).clicked() {
+                                    if ui
+                                        .button(format!("📋  {}", t::copy_absolute_path()))
+                                        .clicked()
+                                    {
                                         action = ExplorerAction::CopyAbsolutePath(path.clone());
                                         ui.close();
                                     }
 
-                                    if ui.button(format!("📋  {}", t::copy_filename())).clicked() {
+                                    if ui.button(format!("📋  {}", t::copy_filename())).clicked()
+                                    {
                                         action = ExplorerAction::CopyFilename(path.clone());
                                         ui.close();
                                     }
@@ -132,7 +139,10 @@ impl ExplorerPanel {
                                     ui.separator();
 
                                     #[cfg(target_os = "macos")]
-                                    if ui.button(format!("🔍  {}", t::reveal_in_finder())).clicked() {
+                                    if ui
+                                        .button(format!("🔍  {}", t::reveal_in_finder()))
+                                        .clicked()
+                                    {
                                         action = ExplorerAction::RevealInFinder(path.clone());
                                         ui.close();
                                     }
@@ -151,7 +161,10 @@ impl ExplorerPanel {
 
                                     ui.separator();
 
-                                    if ui.button(format!("✕  {}", t::remove_from_recent())).clicked() {
+                                    if ui
+                                        .button(format!("✕  {}", t::remove_from_recent()))
+                                        .clicked()
+                                    {
                                         action = ExplorerAction::RemoveFromRecent(path.clone());
                                         ui.close();
                                     }
@@ -175,12 +188,17 @@ impl ExplorerPanel {
                 } else {
                     format!("📱 {}", t::android_devices())
                 };
-                
+
                 CollapsingHeader::new(RichText::new(&devices_header).size(12.0))
                     .default_open(true)
                     .show(ui, |ui| {
                         if self.android_devices.is_empty() {
-                            ui.label(RichText::new(t::no_devices_connected()).weak().italics().small());
+                            ui.label(
+                                RichText::new(t::no_devices_connected())
+                                    .weak()
+                                    .italics()
+                                    .small(),
+                            );
                         } else {
                             for device in &self.android_devices.clone() {
                                 let (status_icon, status_color) = if device.is_online {
@@ -201,12 +219,21 @@ impl ExplorerPanel {
                                     device.serial.clone()
                                 };
 
-                                let response = ui.horizontal(|ui| {
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new(conn_icon).size(10.0));
-                                    ui.label(RichText::new(status_icon).color(status_color).size(8.0));
-                                    ui.selectable_label(false, RichText::new(&device_label).size(11.0))
-                                }).inner;
+                                let response = ui
+                                    .horizontal(|ui| {
+                                        ui.add_space(4.0);
+                                        ui.label(RichText::new(conn_icon).size(10.0));
+                                        ui.label(
+                                            RichText::new(status_icon)
+                                                .color(status_color)
+                                                .size(8.0),
+                                        );
+                                        ui.selectable_label(
+                                            false,
+                                            RichText::new(&device_label).size(11.0),
+                                        )
+                                    })
+                                    .inner;
 
                                 if response.clicked() && device.is_online {
                                     action = ExplorerAction::OpenAndroidLogcat(device.clone());
@@ -220,19 +247,21 @@ impl ExplorerPanel {
                                     t::connection(),
                                     device.connection_type,
                                     t::state_label(),
-                                    if device.is_online { 
-                                        format!("\n\n{}", t::click_to_view_logcat()) 
-                                    } else { 
-                                        format!("\n\n⚠️ {}", t::device_offline()) 
+                                    if device.is_online {
+                                        format!("\n\n{}", t::click_to_view_logcat())
+                                    } else {
+                                        format!("\n\n⚠️ {}", t::device_offline())
                                     }
                                 );
 
                                 response.on_hover_text(&tooltip_text).context_menu(|ui| {
                                     ui.set_min_width(160.0);
-                                    
+
                                     if device.is_online {
-                                        if ui.button(format!("📋  {}", t::view_logcat())).clicked() {
-                                            action = ExplorerAction::OpenAndroidLogcat(device.clone());
+                                        if ui.button(format!("📋  {}", t::view_logcat())).clicked()
+                                        {
+                                            action =
+                                                ExplorerAction::OpenAndroidLogcat(device.clone());
                                             ui.close();
                                         }
                                         ui.separator();
@@ -245,8 +274,11 @@ impl ExplorerPanel {
 
                                     if device.connection_type == ConnectionType::Tcp {
                                         ui.separator();
-                                        if ui.button(format!("🔌  {}", t::disconnect())).clicked() {
-                                            action = ExplorerAction::DisconnectAndroidDevice(device.serial.clone());
+                                        if ui.button(format!("🔌  {}", t::disconnect())).clicked()
+                                        {
+                                            action = ExplorerAction::DisconnectAndroidDevice(
+                                                device.serial.clone(),
+                                            );
                                             ui.close();
                                         }
                                     }
@@ -264,7 +296,9 @@ impl ExplorerPanel {
                 ui.add_space(8.0);
 
                 // REMOTE STREAMS section
-                let online_streams = self.remote_streams.iter()
+                let online_streams = self
+                    .remote_streams
+                    .iter()
                     .filter(|s| s.status == ConnectionStatus::Online)
                     .count();
                 let streams_header = if online_streams > 0 {
@@ -272,15 +306,21 @@ impl ExplorerPanel {
                 } else {
                     format!("🌐 {}", t::remote_streams())
                 };
-                
+
                 CollapsingHeader::new(RichText::new(&streams_header).size(12.0))
                     .default_open(true)
                     .show(ui, |ui| {
                         if self.remote_streams.is_empty() {
-                            ui.label(RichText::new(t::waiting_for_connections()).weak().italics().small());
+                            ui.label(
+                                RichText::new(t::waiting_for_connections())
+                                    .weak()
+                                    .italics()
+                                    .small(),
+                            );
                         } else {
                             // Group streams by IP address
-                            let mut streams_by_ip: HashMap<String, Vec<&RemoteStream>> = HashMap::new();
+                            let mut streams_by_ip: HashMap<String, Vec<&RemoteStream>> =
+                                HashMap::new();
                             for stream in &self.remote_streams {
                                 let ip = stream.ip_address();
                                 streams_by_ip.entry(ip).or_default().push(stream);
@@ -316,24 +356,47 @@ impl ExplorerPanel {
                                             ConnectionStatus::Offline => ("○", Color32::GRAY),
                                         };
 
-                                        let response = ui.horizontal(|ui| {
-                                            ui.add_space(8.0);
-                                            ui.label(RichText::new(status_icon).color(status_color).size(8.0));
-                                            ui.selectable_label(
-                                                false,
-                                                RichText::new(&stream.project_name).size(11.0),
-                                            )
-                                        }).inner;
+                                        let response = ui
+                                            .horizontal(|ui| {
+                                                ui.add_space(8.0);
+                                                ui.label(
+                                                    RichText::new(status_icon)
+                                                        .color(status_color)
+                                                        .size(8.0),
+                                                );
+                                                ui.selectable_label(
+                                                    false,
+                                                    RichText::new(&stream.project_name).size(11.0),
+                                                )
+                                            })
+                                            .inner;
 
                                         if response.clicked() {
-                                            action = ExplorerAction::OpenRemoteStream((*stream).clone());
+                                            action =
+                                                ExplorerAction::OpenRemoteStream((*stream).clone());
                                         }
 
                                         response.on_hover_ui(|ui| {
-                                            ui.label(format!("{}: {}", t::project(), stream.project_name));
-                                            ui.label(format!("{}: {}", t::address(), stream.remote_addr));
-                                            ui.label(format!("{}: {:?}", t::status(), stream.status));
-                                            ui.label(format!("{}: {}", t::received(), format_bytes(stream.bytes_received)));
+                                            ui.label(format!(
+                                                "{}: {}",
+                                                t::project(),
+                                                stream.project_name
+                                            ));
+                                            ui.label(format!(
+                                                "{}: {}",
+                                                t::address(),
+                                                stream.remote_addr
+                                            ));
+                                            ui.label(format!(
+                                                "{}: {:?}",
+                                                t::status(),
+                                                stream.status
+                                            ));
+                                            ui.label(format!(
+                                                "{}: {}",
+                                                t::received(),
+                                                format_bytes(stream.bytes_received)
+                                            ));
                                         });
 
                                         // Show bytes received

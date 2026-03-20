@@ -197,7 +197,9 @@ impl SettingsPanel {
                             )
                             .clicked()
                         {
-                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
+                            action = SettingsAction::CloseButtonBehaviorChanged(
+                                self.close_button_behavior,
+                            );
                         }
                         if ui
                             .selectable_value(
@@ -207,7 +209,9 @@ impl SettingsPanel {
                             )
                             .clicked()
                         {
-                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
+                            action = SettingsAction::CloseButtonBehaviorChanged(
+                                self.close_button_behavior,
+                            );
                         }
                         if ui
                             .selectable_value(
@@ -217,7 +221,9 @@ impl SettingsPanel {
                             )
                             .clicked()
                         {
-                            action = SettingsAction::CloseButtonBehaviorChanged(self.close_button_behavior);
+                            action = SettingsAction::CloseButtonBehaviorChanged(
+                                self.close_button_behavior,
+                            );
                         }
                     });
             });

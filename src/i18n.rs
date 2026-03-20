@@ -1572,13 +1572,6 @@ impl Translations {
         }
     }
 
-    pub fn config_save_failed() -> &'static str {
-        match current_language() {
-            Language::English => "Failed to save config",
-            Language::Chinese => "保存配置失败",
-        }
-    }
-
     pub fn server_error() -> &'static str {
         match current_language() {
             Language::English => "Server error",

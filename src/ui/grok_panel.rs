@@ -662,34 +662,31 @@ Output:
                         ui.horizontal(|ui| {
                             if ui.button(t::grok_save_pattern()).clicked()
                                 && !self.pattern_editor.name.is_empty()
-                                    && !self.pattern_editor.pattern.is_empty()
-                                {
-                                    let new_pattern = CustomPattern {
-                                        name: self.pattern_editor.name.clone(),
-                                        pattern: self.pattern_editor.pattern.clone(),
-                                        description: self.pattern_editor.description.clone(),
-                                        example: self.pattern_editor.example.clone(),
-                                        enabled: true,
-                                        display_template: self
-                                            .pattern_editor
-                                            .display_template
-                                            .clone(),
-                                        pre_processor: self.pattern_editor.pre_processor.clone(),
-                                    };
+                                && !self.pattern_editor.pattern.is_empty()
+                            {
+                                let new_pattern = CustomPattern {
+                                    name: self.pattern_editor.name.clone(),
+                                    pattern: self.pattern_editor.pattern.clone(),
+                                    description: self.pattern_editor.description.clone(),
+                                    example: self.pattern_editor.example.clone(),
+                                    enabled: true,
+                                    display_template: self.pattern_editor.display_template.clone(),
+                                    pre_processor: self.pattern_editor.pre_processor.clone(),
+                                };
 
-                                    if let Some(idx) = self.pattern_editor.editing_index {
-                                        // Update existing
-                                        if let Some(p) = parser.custom_patterns_mut().get_mut(idx) {
-                                            *p = new_pattern;
-                                        }
-                                    } else {
-                                        // Add new
-                                        parser.add_custom_pattern(new_pattern);
+                                if let Some(idx) = self.pattern_editor.editing_index {
+                                    // Update existing
+                                    if let Some(p) = parser.custom_patterns_mut().get_mut(idx) {
+                                        *p = new_pattern;
                                     }
-
-                                    self.pattern_editor.clear();
-                                    *action = GrokPanelAction::ConfigChanged;
+                                } else {
+                                    // Add new
+                                    parser.add_custom_pattern(new_pattern);
                                 }
+
+                                self.pattern_editor.clear();
+                                *action = GrokPanelAction::ConfigChanged;
+                            }
 
                             if ui.button(t::grok_cancel()).clicked() {
                                 self.pattern_editor.clear();
@@ -808,27 +805,26 @@ Output:
                     .hint_text(t::grok_ai_json_placeholder()),
             );
 
-            if response.changed()
-                && self.parse_ai_response() {
-                    // Test the pattern with sample lines (only once)
-                    if !self.ai_assist.pattern_tested {
-                        self.test_ai_pattern(parser);
-                        self.ai_assist.pattern_tested = true;
+            if response.changed() && self.parse_ai_response() {
+                // Test the pattern with sample lines (only once)
+                if !self.ai_assist.pattern_tested {
+                    self.test_ai_pattern(parser);
+                    self.ai_assist.pattern_tested = true;
+                }
+                // Fill the pattern editor with AI generated content
+                if let Some(ref pattern) = self.ai_assist.parsed_pattern {
+                    self.pattern_editor.name = pattern.name.clone();
+                    self.pattern_editor.pattern = pattern.pattern.clone();
+                    self.pattern_editor.description = pattern.description.clone();
+                    self.pattern_editor.display_template = pattern.display_template.clone();
+                    if let Some(first_sample) = self.ai_assist.sample_lines.first() {
+                        self.pattern_editor.example = first_sample.clone();
                     }
-                    // Fill the pattern editor with AI generated content
-                    if let Some(ref pattern) = self.ai_assist.parsed_pattern {
-                        self.pattern_editor.name = pattern.name.clone();
-                        self.pattern_editor.pattern = pattern.pattern.clone();
-                        self.pattern_editor.description = pattern.description.clone();
-                        self.pattern_editor.display_template = pattern.display_template.clone();
-                        if let Some(first_sample) = self.ai_assist.sample_lines.first() {
-                            self.pattern_editor.example = first_sample.clone();
-                        }
-                        if let Some(ref pre_proc) = pattern.pre_processor {
-                            self.pattern_editor.pre_processor = pre_proc.to_pre_processor();
-                        }
+                    if let Some(ref pre_proc) = pattern.pre_processor {
+                        self.pattern_editor.pre_processor = pre_proc.to_pre_processor();
                     }
                 }
+            }
         }
 
         // Show error message

@@ -612,8 +612,10 @@ impl MainView {
         let current_offset = response.state.offset.y;
         self.virtual_scroll.state.scroll_offset = current_offset;
         self.virtual_scroll.state.viewport_height = available_size.y;
-        self.virtual_scroll.state.first_visible_row = (current_offset / row_height).floor() as usize;
-        self.virtual_scroll.state.visible_row_count = (available_size.y / row_height).ceil() as usize;
+        self.virtual_scroll.state.first_visible_row =
+            (current_offset / row_height).floor() as usize;
+        self.virtual_scroll.state.visible_row_count =
+            (available_size.y / row_height).ceil() as usize;
 
         // Context menu
         let mut context_action = None;
@@ -857,18 +859,18 @@ impl MainView {
         if row_height <= 0.0 || total_rows == 0 {
             return 0..0;
         }
-        
+
         let viewport_height = self.virtual_scroll.state.viewport_height;
         let scroll_offset = self.virtual_scroll.state.scroll_offset;
-        
+
         let first_visible = (scroll_offset / row_height).floor() as usize;
         let visible_count = (viewport_height / row_height).ceil() as usize;
-        
+
         // Add generous overscan for parsing
         let overscan = 50;
         let start = first_visible.saturating_sub(overscan);
         let end = (first_visible + visible_count + overscan).min(total_rows);
-        
+
         start..end
     }
 }

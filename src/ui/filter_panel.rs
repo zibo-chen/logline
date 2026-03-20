@@ -34,22 +34,25 @@ impl FilterPanel {
         // Expanded advanced filters
         if self.expanded {
             ui.add_space(8.0);
-            
+
             ui.group(|ui| {
                 ui.label(RichText::new(t::advanced_filters()).strong());
-                
+
                 ui.add_space(4.0);
-                
+
                 // Bookmarks only
-                if ui.checkbox(&mut filter.bookmarks_only, t::bookmarks_only()).changed() {
+                if ui
+                    .checkbox(&mut filter.bookmarks_only, t::bookmarks_only())
+                    .changed()
+                {
                     changed = true;
                 }
-                
+
                 ui.add_space(8.0);
-                
+
                 // Exclude patterns
                 ui.label(t::exclude_patterns());
-                
+
                 // List existing patterns
                 let mut to_remove = None;
                 for (i, pattern) in filter.exclude_patterns.iter().enumerate() {
@@ -60,12 +63,12 @@ impl FilterPanel {
                         }
                     });
                 }
-                
+
                 if let Some(idx) = to_remove {
                     filter.remove_exclude(idx);
                     changed = true;
                 }
-                
+
                 // Add new pattern
                 ui.horizontal(|ui| {
                     let response = ui.add(
@@ -73,19 +76,23 @@ impl FilterPanel {
                             .hint_text(t::exclude_pattern_hint())
                             .desired_width(200.0),
                     );
-                    
+
                     let add_enabled = !self.exclude_input.is_empty();
-                    if ui.add_enabled(add_enabled, egui::Button::new(t::add())).clicked()
-                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && add_enabled)
+                    if ui
+                        .add_enabled(add_enabled, egui::Button::new(t::add()))
+                        .clicked()
+                        || (response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            && add_enabled)
                     {
                         filter.add_exclude(self.exclude_input.clone());
                         self.exclude_input.clear();
                         changed = true;
                     }
                 });
-                
+
                 ui.add_space(4.0);
-                
+
                 // Clear all filters
                 if ui.button(t::clear_all_filters()).clicked() {
                     filter.enable_all_levels();
@@ -118,8 +125,12 @@ impl FilterPanel {
                 LogLevel::Trace,
             ] {
                 let enabled = filter.is_level_enabled(level);
-                let color = if enabled { level.color() } else { Color32::from_gray(80) };
-                
+                let color = if enabled {
+                    level.color()
+                } else {
+                    Color32::from_gray(80)
+                };
+
                 let text = match level {
                     LogLevel::Error => "E",
                     LogLevel::Warn => "W",
@@ -128,12 +139,10 @@ impl FilterPanel {
                     LogLevel::Trace => "T",
                     LogLevel::Fatal => "F",
                 };
-                
-                let btn = ui.selectable_label(
-                    enabled,
-                    RichText::new(text).color(color).monospace(),
-                );
-                
+
+                let btn =
+                    ui.selectable_label(enabled, RichText::new(text).color(color).monospace());
+
                 if btn.on_hover_text(level.as_str()).clicked() {
                     filter.toggle_level(level);
                     changed = true;

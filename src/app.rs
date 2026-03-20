@@ -9,6 +9,7 @@ use crate::remote_server::{RemoteServer, ServerConfig, ServerEvent};
 use crate::tray::{TrayEvent, TrayManager};
 use crate::ui::activity_bar::{ActivityBar, ActivityBarAction, ActivityView};
 use crate::ui::advanced_filters_panel::AdvancedFiltersPanel;
+#[cfg(target_os = "macos")]
 use crate::ui::app_titlebar::AppTitleBar;
 use crate::ui::bookmarks_panel::{BookmarkAction, BookmarksPanel};
 use crate::ui::close_dialog::{CloseDialog, CloseDialogResult};
@@ -30,9 +31,9 @@ use crate::mcp::{McpConfig, McpServer};
 use anyhow::Result;
 use eframe::egui;
 use egui::RichText;
-use egui_desktop::{TitleBar, TitleBarOptions, ThemeMode};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use egui_desktop::{apply_rounded_corners, render_resize_handles};
+use egui_desktop::{ThemeMode, TitleBar, TitleBarOptions};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,7 @@ pub struct LoglineApp {
     /// Search bar
     search_bar: SearchBar,
     /// Application title bar with search
+    #[cfg(target_os = "macos")]
     app_titlebar: AppTitleBar,
 
     /// Filter panel
@@ -67,6 +69,10 @@ pub struct LoglineApp {
 
     /// Last update time for rate limiting
     last_update: Instant,
+    /// Whether configuration should be persisted on the next debounce flush
+    config_dirty: bool,
+    /// Last time configuration changes were queued
+    last_config_change: Option<Instant>,
 
     // === New: Remote server and sidebar ===
     /// Remote log server
@@ -99,7 +105,15 @@ pub struct LoglineApp {
     // === Android Logcat ===
     /// Active logcat readers (device_serial -> (reader, cache_path, tab_id, stop_signal))
     /// The stop_signal is used to notify the cache file writer thread to stop
-    active_logcat_readers: std::collections::HashMap<String, (crate::android_logcat::LogcatReader, std::path::PathBuf, crate::ui::tab_bar::TabId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    active_logcat_readers: std::collections::HashMap<
+        String,
+        (
+            crate::android_logcat::LogcatReader,
+            std::path::PathBuf,
+            crate::ui::tab_bar::TabId,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ),
+    >,
 
     /// Whether this is the first frame (for initial theme application)
     first_frame: bool,
@@ -232,13 +246,14 @@ impl LoglineApp {
                 let buffer_config = LogBufferConfig {
                     max_lines: config.buffer.max_lines,
                     auto_trim: config.buffer.auto_trim,
-                    chunk_size: 5_000,     // Load 5k lines per chunk when scrolling up
+                    chunk_size: 5_000, // Load 5k lines per chunk when scrolling up
                 };
                 let mut manager = TabManager::new(buffer_config);
                 manager.set_dark_theme(config.theme == Theme::Dark);
                 manager
             },
             search_bar: SearchBar::new(),
+            #[cfg(target_os = "macos")]
             app_titlebar: AppTitleBar::new(),
             filter_panel: FilterPanel::new(),
             status_bar: StatusBar::new(),
@@ -252,6 +267,8 @@ impl LoglineApp {
             goto_dialog: GotoLineDialog::default(),
             source_picker_dialog: SourcePickerDialog::new(),
             last_update: Instant::now(),
+            config_dirty: false,
+            last_config_change: None,
             // New components
             remote_server,
             activity_bar: ActivityBar::new(),
@@ -286,7 +303,12 @@ impl LoglineApp {
                 if let Some(builtin) = config.grok.builtin_pattern {
                     let _ = parser.set_builtin_pattern(builtin);
                 } else if let Some(ref custom_name) = config.grok.custom_pattern_name {
-                    if let Some(custom) = config.grok.custom_patterns.iter().find(|p| &p.name == custom_name) {
+                    if let Some(custom) = config
+                        .grok
+                        .custom_patterns
+                        .iter()
+                        .find(|p| &p.name == custom_name)
+                    {
                         let _ = parser.set_custom_pattern(&custom.name, &custom.pattern);
                     }
                 }
@@ -296,10 +318,7 @@ impl LoglineApp {
             title_bar: TitleBar::new(
                 TitleBarOptions::new()
                     .with_title("Logline")
-                    .with_app_icon(
-                        include_bytes!("../res/icon.png"),
-                        "bytes://icon.png"
-                    )
+                    .with_app_icon(include_bytes!("../res/icon.png"), "bytes://icon.png")
                     .with_theme_mode(if config.theme == Theme::Dark {
                         ThemeMode::Dark
                     } else {
@@ -327,6 +346,36 @@ impl LoglineApp {
             // Files to open on startup
             pending_initial_files: initial_files,
             file_receiver: Some(file_receiver),
+        }
+    }
+
+    fn mark_config_dirty(&mut self) {
+        self.config_dirty = true;
+        self.last_config_change = Some(Instant::now());
+    }
+
+    fn flush_config_if_needed(&mut self, force: bool) {
+        const CONFIG_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+
+        if !self.config_dirty {
+            return;
+        }
+
+        let should_flush = force
+            || self
+                .last_config_change
+                .map(|last_change| last_change.elapsed() >= CONFIG_SAVE_DEBOUNCE)
+                .unwrap_or(true);
+
+        if !should_flush {
+            return;
+        }
+
+        if let Err(e) = self.config.save() {
+            tracing::error!("Failed to save config: {}", e);
+        } else {
+            self.config_dirty = false;
+            self.last_config_change = None;
         }
     }
 
@@ -384,7 +433,11 @@ impl LoglineApp {
         let final_encoding = encoding.or_else(|| self.config.get_file_encoding(&path));
 
         // Open in tab manager
-        let tab_id = self.tab_manager.open_local_file(path.clone(), final_encoding, &self.bookmarks_store)?;
+        let tab_id = self.tab_manager.open_local_file(
+            path.clone(),
+            final_encoding,
+            &self.bookmarks_store,
+        )?;
 
         // Update recent files (only for local files, not cache files)
         let is_cache_file = if let Some(data_dir) = dirs::data_dir() {
@@ -396,7 +449,7 @@ impl LoglineApp {
 
         if !is_cache_file {
             self.config.add_recent_file(path.clone());
-            let _ = self.config.save();
+            self.mark_config_dirty();
             // Also update explorer panel's local files list
             self.explorer_panel.local_files = self.config.recent_files.clone();
         }
@@ -447,11 +500,14 @@ impl LoglineApp {
     }
 
     /// Open Android logcat in a new tab
-    pub fn open_android_logcat(&mut self, device: crate::android_logcat::AndroidDevice) -> Result<()> {
-        use crate::android_logcat::{LogcatReader, LogcatOptions};
-        use std::sync::Arc;
+    pub fn open_android_logcat(
+        &mut self,
+        device: crate::android_logcat::AndroidDevice,
+    ) -> Result<()> {
+        use crate::android_logcat::{LogcatOptions, LogcatReader};
         use std::sync::atomic::{AtomicBool, Ordering};
-        
+        use std::sync::Arc;
+
         // Check if we already have an active logcat for this device
         if let Some((_, _cache_path, tab_id, _)) = self.active_logcat_readers.get(&device.serial) {
             // Check if the tab is still open
@@ -477,12 +533,13 @@ impl LoglineApp {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("logline")
             .join("logcat");
-        
+
         // Ensure cache directory exists
         std::fs::create_dir_all(&cache_dir)?;
-        
+
         // Use only device serial for file name (no timestamp)
-        let cache_file = cache_dir.join(format!("{}.log", 
+        let cache_file = cache_dir.join(format!(
+            "{}.log",
             device.serial.replace(':', "_").replace('.', "_")
         ));
 
@@ -490,7 +547,7 @@ impl LoglineApp {
         if cache_file.exists() {
             std::fs::remove_file(&cache_file)?;
         }
-        
+
         // Create the cache file
         std::fs::File::create(&cache_file)?;
 
@@ -514,14 +571,14 @@ impl LoglineApp {
         // Spawn a background thread to write logcat to cache file
         let cache_file_clone = cache_file.clone();
         std::thread::spawn(move || {
-            use std::io::Write;
             use std::fs::OpenOptions;
+            use std::io::Write;
             use std::time::Duration;
-            
+
             let mut file = match OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&cache_file_clone) 
+                .open(&cache_file_clone)
             {
                 Ok(f) => f,
                 Err(e) => {
@@ -585,7 +642,7 @@ impl LoglineApp {
     /// Connect to Android device over TCP
     pub fn connect_android_tcp(&mut self, address: String) {
         use crate::android_logcat::AdbManager;
-        
+
         let manager = AdbManager::new();
         match manager.connect_tcp(&address) {
             Ok(msg) => {
@@ -595,11 +652,10 @@ impl LoglineApp {
                 self.refresh_android_devices();
             }
             Err(e) => {
-                self.source_picker_dialog.set_tcp_connect_error(Some(format!("{}", e)));
-                self.status_bar.set_message(
-                    format!("Failed to connect: {}", e),
-                    StatusLevel::Error,
-                );
+                self.source_picker_dialog
+                    .set_tcp_connect_error(Some(format!("{}", e)));
+                self.status_bar
+                    .set_message(format!("Failed to connect: {}", e), StatusLevel::Error);
             }
         }
     }
@@ -607,7 +663,7 @@ impl LoglineApp {
     /// Disconnect Android device (TCP only)
     pub fn disconnect_android_device(&mut self, serial: String) {
         use crate::android_logcat::AdbManager;
-        
+
         let manager = AdbManager::new();
         match manager.disconnect_tcp(&serial) {
             Ok(msg) => {
@@ -616,10 +672,8 @@ impl LoglineApp {
                 self.refresh_android_devices();
             }
             Err(e) => {
-                self.status_bar.set_message(
-                    format!("Failed to disconnect: {}", e),
-                    StatusLevel::Error,
-                );
+                self.status_bar
+                    .set_message(format!("Failed to disconnect: {}", e), StatusLevel::Error);
             }
         }
     }
@@ -627,7 +681,7 @@ impl LoglineApp {
     /// Refresh Android devices list
     pub fn refresh_android_devices(&mut self) {
         use crate::android_logcat::AdbManager;
-        
+
         let manager = AdbManager::new();
         match manager.list_devices() {
             Ok(devices) => {
@@ -650,14 +704,16 @@ impl LoglineApp {
     /// Open a log file in split view
     pub fn open_file_in_split(&mut self, path: PathBuf) -> Result<()> {
         // First, try to open the file in a new tab if it's not already open
-        let tab_id = self.tab_manager.open_local_file(path.clone(), None, &self.bookmarks_store)?;
-        
+        let tab_id = self
+            .tab_manager
+            .open_local_file(path.clone(), None, &self.bookmarks_store)?;
+
         // Then open it in split view
         self.tab_manager.enable_split(tab_id);
-        
+
         self.status_bar
             .set_message("File opened in split view", StatusLevel::Success);
-        
+
         Ok(())
     }
 
@@ -665,8 +721,10 @@ impl LoglineApp {
     /// This stops the reader, signals the writer thread to stop, and removes from tracking
     fn cleanup_logcat_reader(&mut self, serial: &str) {
         use std::sync::atomic::Ordering;
-        
-        if let Some((reader, _cache_path, _tab_id, writer_stop_signal)) = self.active_logcat_readers.remove(serial) {
+
+        if let Some((reader, _cache_path, _tab_id, writer_stop_signal)) =
+            self.active_logcat_readers.remove(serial)
+        {
             // Signal the writer thread to stop
             writer_stop_signal.store(true, Ordering::Relaxed);
             // Stop the logcat reader (this will also close the channel)
@@ -676,11 +734,12 @@ impl LoglineApp {
 
     /// Clean up logcat reader associated with a tab ID
     fn cleanup_logcat_reader_for_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
-        let serial_to_remove: Option<String> = self.active_logcat_readers
+        let serial_to_remove: Option<String> = self
+            .active_logcat_readers
             .iter()
             .find(|(_, (_, _, id, _))| *id == tab_id)
             .map(|(serial, _)| serial.clone());
-        
+
         if let Some(serial) = serial_to_remove {
             self.cleanup_logcat_reader(&serial);
         }
@@ -688,12 +747,13 @@ impl LoglineApp {
 
     /// Clean up all logcat readers for multiple tab IDs
     fn cleanup_logcat_readers_for_tabs(&mut self, tab_ids: &[crate::ui::tab_bar::TabId]) {
-        let serials_to_remove: Vec<String> = self.active_logcat_readers
+        let serials_to_remove: Vec<String> = self
+            .active_logcat_readers
             .iter()
             .filter(|(_, (_, _, id, _))| tab_ids.contains(id))
             .map(|(serial, _)| serial.clone())
             .collect();
-        
+
         for serial in serials_to_remove {
             self.cleanup_logcat_reader(&serial);
         }
@@ -702,8 +762,10 @@ impl LoglineApp {
     /// Clean up all logcat readers
     fn cleanup_all_logcat_readers(&mut self) {
         use std::sync::atomic::Ordering;
-        
-        for (_, (reader, _cache_path, _tab_id, writer_stop_signal)) in self.active_logcat_readers.drain() {
+
+        for (_, (reader, _cache_path, _tab_id, writer_stop_signal)) in
+            self.active_logcat_readers.drain()
+        {
             // Signal the writer thread to stop
             writer_stop_signal.store(true, Ordering::Relaxed);
             // Stop the logcat reader
@@ -715,8 +777,9 @@ impl LoglineApp {
     pub fn close_tab(&mut self, tab_id: crate::ui::tab_bar::TabId) {
         // Clean up logcat reader if this is a logcat tab
         self.cleanup_logcat_reader_for_tab(tab_id);
-        
-        self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
+
+        self.tab_manager
+            .close_tab(tab_id, &mut self.bookmarks_store);
     }
 
     /// Reload the current file
@@ -734,15 +797,16 @@ impl LoglineApp {
     pub fn change_encoding(&mut self, encoding: Option<&'static encoding_rs::Encoding>) {
         if let Some(state) = self.tab_manager.get_active_state() {
             let path = state.path.clone();
-            
+
             // Save encoding preference
             self.config.set_file_encoding(path.clone(), encoding);
-            let _ = self.config.save();
+            self.mark_config_dirty();
 
             // Close the current tab and reopen with new encoding
             if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
-                self.tab_manager.close_tab(tab_id, &mut self.bookmarks_store);
-                
+                self.tab_manager
+                    .close_tab(tab_id, &mut self.bookmarks_store);
+
                 match self.open_file(path, encoding) {
                     Ok(()) => {
                         let encoding_name = encoding.map(|e| e.name()).unwrap_or("Auto");
@@ -781,21 +845,28 @@ impl LoglineApp {
                 state.grok_parser = None;
                 state.grok_config = None;
                 state.grok_parse_progress = 0;
-                
+
                 // Clear grok fields for this tab only
                 for entry in state.buffer.iter_mut() {
                     entry.clear_grok_fields();
                 }
-                
+
                 // Remove file-specific config
                 self.config.set_file_grok_config(file_path, None);
-                
-                self.status_bar.set_message(t::grok_pattern_cleared(), StatusLevel::Info);
+
+                self.status_bar
+                    .set_message(t::grok_pattern_cleared(), StatusLevel::Info);
             }
             GrokPatternSelection::Custom(name) => {
                 // Find custom pattern from global config
-                let custom = self.config.grok.custom_patterns.iter().find(|p| p.name == name).cloned();
-                
+                let custom = self
+                    .config
+                    .grok
+                    .custom_patterns
+                    .iter()
+                    .find(|p| p.name == name)
+                    .cloned();
+
                 let Some(custom) = custom else {
                     self.status_bar.set_message(
                         format!("{}: {}", t::grok_pattern_error(), name),
@@ -803,25 +874,23 @@ impl LoglineApp {
                     );
                     return;
                 };
-                
+
                 // Create a new parser for this tab
                 let mut parser = GrokParser::new();
                 parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
                 for (n, pat) in &self.config.grok.custom_definitions {
                     parser.add_pattern_definition(n, pat);
                 }
-                
+
                 let template = if custom.display_template.is_empty() {
                     None
                 } else {
                     Some(custom.display_template.as_str())
                 };
-                
-                if let Err(e) = parser.set_custom_pattern_with_template(
-                    &name,
-                    &custom.pattern,
-                    template,
-                ) {
+
+                if let Err(e) =
+                    parser.set_custom_pattern_with_template(&name, &custom.pattern, template)
+                {
                     self.status_bar.set_message(
                         format!("{}: {}", t::grok_pattern_error(), e),
                         StatusLevel::Error,
@@ -832,10 +901,10 @@ impl LoglineApp {
                 if custom.pre_processor != crate::grok_parser::PreProcessor::None {
                     parser.set_pre_processor(custom.pre_processor.clone());
                 }
-                
+
                 // Get state again after error check
                 let state = self.tab_manager.get_active_state_mut().unwrap();
-                
+
                 state.grok_parser = Some(parser);
                 state.grok_config = Some(FileGrokConfig {
                     enabled: true,
@@ -846,52 +915,50 @@ impl LoglineApp {
                     pre_processor: custom.pre_processor.clone(),
                 });
                 state.grok_parse_progress = 0;
-                
+
                 // Clear grok fields to reparse
                 for entry in state.buffer.iter_mut() {
                     entry.clear_grok_fields();
                 }
-                
+
                 // Save file-specific config
                 let config = state.grok_config.clone();
                 let path = state.path.clone();
                 self.config.set_file_grok_config(path, config);
-                
+
                 self.status_bar.set_message(
                     format!("{}: {}", t::grok_active_pattern(), name),
                     StatusLevel::Success,
                 );
             }
         }
-        
-        // Save config
-        if let Err(e) = self.config.save() {
-            tracing::error!("Failed to save config: {}", e);
-        }
+
+        // Persist pending config updates without blocking the hot path elsewhere.
+        self.flush_config_if_needed(true);
     }
 
     /// Restore saved grok config for a file when opening it
     fn restore_file_grok_config(&mut self, tab_id: crate::ui::tab_bar::TabId, path: &PathBuf) {
-        use crate::grok_parser::{GrokParser, BuiltinPattern};
-        
+        use crate::grok_parser::{BuiltinPattern, GrokParser};
+
         let path_str = path.to_string_lossy().to_string();
         let saved_config = self.config.file_grok_configs.get(&path_str).cloned();
-        
+
         let Some(file_config) = saved_config else {
             return; // No saved config for this file
         };
-        
+
         if !file_config.enabled {
             return; // Grok was disabled for this file
         }
-        
+
         // Create a parser for this tab
         let mut parser = GrokParser::new();
         parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
         for (name, pat) in &self.config.grok.custom_definitions {
             parser.add_pattern_definition(name, pat);
         }
-        
+
         // Set the pattern based on saved config
         let pattern_set = match file_config.pattern_type.as_str() {
             "builtin" => {
@@ -908,17 +975,31 @@ impl LoglineApp {
             }
             "custom" => {
                 if let Some(ref custom_name) = file_config.custom_pattern_name {
-                    if let Some(custom) = self.config.grok.custom_patterns.iter().find(|p| &p.name == custom_name) {
+                    if let Some(custom) = self
+                        .config
+                        .grok
+                        .custom_patterns
+                        .iter()
+                        .find(|p| &p.name == custom_name)
+                    {
                         let template = if custom.display_template.is_empty() {
                             None
                         } else {
                             Some(custom.display_template.as_str())
                         };
-                        let pattern_ok = parser.set_custom_pattern_with_template(custom_name, &custom.pattern, template).is_ok();
+                        let pattern_ok = parser
+                            .set_custom_pattern_with_template(
+                                custom_name,
+                                &custom.pattern,
+                                template,
+                            )
+                            .is_ok();
                         if pattern_ok {
                             if custom.pre_processor != crate::grok_parser::PreProcessor::None {
                                 parser.set_pre_processor(custom.pre_processor.clone());
-                            } else if file_config.pre_processor != crate::grok_parser::PreProcessor::None {
+                            } else if file_config.pre_processor
+                                != crate::grok_parser::PreProcessor::None
+                            {
                                 parser.set_pre_processor(file_config.pre_processor.clone());
                             }
                         }
@@ -937,13 +1018,17 @@ impl LoglineApp {
                     } else {
                         Some(inline.display_template.as_str())
                     };
-                    let pattern_ok = parser.set_custom_pattern_with_template(&inline.name, &inline.pattern, template).is_ok();
+                    let pattern_ok = parser
+                        .set_custom_pattern_with_template(&inline.name, &inline.pattern, template)
+                        .is_ok();
                     if pattern_ok {
                         // Inline patterns may have their own pre_processor
                         // Priority: inline pattern > file config
                         if inline.pre_processor != crate::grok_parser::PreProcessor::None {
                             parser.set_pre_processor(inline.pre_processor.clone());
-                        } else if file_config.pre_processor != crate::grok_parser::PreProcessor::None {
+                        } else if file_config.pre_processor
+                            != crate::grok_parser::PreProcessor::None
+                        {
                             parser.set_pre_processor(file_config.pre_processor.clone());
                         }
                     }
@@ -954,11 +1039,11 @@ impl LoglineApp {
             }
             _ => false,
         };
-        
+
         if pattern_set {
             // Also restore pre_processor
             parser.set_pre_processor(file_config.pre_processor.clone());
-            
+
             if let Some(state) = self.tab_manager.get_state_mut(tab_id) {
                 state.grok_parser = Some(parser);
                 state.grok_config = Some(file_config);
@@ -1002,15 +1087,13 @@ impl LoglineApp {
                 Ok(()) => {
                     let endpoint = server.endpoint_url();
                     let msg = format!("{}: {}", t::mcp_server_started(), endpoint);
-                    self.status_bar
-                        .set_message(msg, StatusLevel::Success);
+                    self.status_bar.set_message(msg, StatusLevel::Success);
                     tracing::info!("MCP server started at {}", endpoint);
                     self.mcp_server = Some(server);
                 }
                 Err(e) => {
                     let msg = format!("{}: {}", t::mcp_server_start_failed(), e);
-                    self.status_bar
-                        .set_message(msg, StatusLevel::Error);
+                    self.status_bar.set_message(msg, StatusLevel::Error);
                     tracing::error!("Failed to start MCP server: {}", e);
                 }
             }
@@ -1057,11 +1140,13 @@ impl LoglineApp {
                         stream_id,
                         remote_addr
                     );
-                    let msg = format!("{} '{}' ({})", t::agent_connected(), project_name, remote_addr);
-                    self.status_bar.set_message(
-                        msg,
-                        StatusLevel::Success,
+                    let msg = format!(
+                        "{} '{}' ({})",
+                        t::agent_connected(),
+                        project_name,
+                        remote_addr
                     );
+                    self.status_bar.set_message(msg, StatusLevel::Success);
 
                     // Don't automatically open the remote stream, just add it to the explorer
                     // User can manually click to open it
@@ -1073,10 +1158,7 @@ impl LoglineApp {
                 } => {
                     tracing::info!("Agent '{}' ({}) disconnected", project_name, stream_id);
                     let msg = format!("{} '{}'", t::agent_disconnected(), stream_id);
-                    self.status_bar.set_message(
-                        msg,
-                        StatusLevel::Warning,
-                    );
+                    self.status_bar.set_message(msg, StatusLevel::Warning);
                     has_stream_changes = true;
                 }
                 ServerEvent::LogDataReceived {
@@ -1089,8 +1171,7 @@ impl LoglineApp {
                 ServerEvent::Error(e) => {
                     tracing::error!("Server error: {}", e);
                     let msg = format!("{}: {}", t::server_error(), e);
-                    self.status_bar
-                        .set_message(msg, StatusLevel::Error);
+                    self.status_bar.set_message(msg, StatusLevel::Error);
                 }
                 ServerEvent::Started { port } => {
                     tracing::info!("Remote server started on port {}", port);
@@ -1242,7 +1323,8 @@ impl LoglineApp {
             }
             // Auto-save bookmarks
             if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
-                self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
+                self.tab_manager
+                    .save_bookmarks(tab_id, &mut self.bookmarks_store);
             }
             return None;
         }
@@ -1331,7 +1413,8 @@ impl LoglineApp {
                 }
                 // Auto-save bookmarks
                 if let Some(tab_id) = self.tab_manager.tab_bar.active_tab {
-                    self.tab_manager.save_bookmarks(tab_id, &mut self.bookmarks_store);
+                    self.tab_manager
+                        .save_bookmarks(tab_id, &mut self.bookmarks_store);
                 }
             }
             ContextMenuAction::ClearSelection => {
@@ -1356,7 +1439,10 @@ impl LoglineApp {
     }
 
     /// Get all visible text for copy from a tab state
-    fn get_all_visible_text_from_state(state: &crate::ui::tab_manager::TabState, filtered_indices: Option<&[usize]>) -> String {
+    fn get_all_visible_text_from_state(
+        state: &crate::ui::tab_manager::TabState,
+        filtered_indices: Option<&[usize]>,
+    ) -> String {
         let mut lines = Vec::new();
         if let Some(indices) = filtered_indices {
             for &idx in indices {
@@ -1425,17 +1511,19 @@ impl LoglineApp {
             ToolbarAction::ToggleTheme => {
                 self.config.theme.toggle();
                 self.toolbar_state.dark_theme = self.config.theme == Theme::Dark;
-                self.tab_manager.set_dark_theme(self.toolbar_state.dark_theme);
+                self.tab_manager
+                    .set_dark_theme(self.toolbar_state.dark_theme);
                 self.settings_panel.dark_theme = self.toolbar_state.dark_theme;
                 self.global_search_panel
                     .set_dark_theme(self.toolbar_state.dark_theme);
                 // Update titlebar theme
-                self.title_bar.update_theme_mode(if self.toolbar_state.dark_theme {
-                    ThemeMode::Dark
-                } else {
-                    ThemeMode::Light
-                });
-                let _ = self.config.save();
+                self.title_bar
+                    .update_theme_mode(if self.toolbar_state.dark_theme {
+                        ThemeMode::Dark
+                    } else {
+                        ThemeMode::Light
+                    });
+                self.mark_config_dirty();
                 Some(AppAction::UpdateTheme)
             }
             ToolbarAction::OpenSettings => {
@@ -1491,25 +1579,21 @@ impl eframe::App for LoglineApp {
 
         // Handle file drag-and-drop
         ctx.input(|i| {
-            if !i.raw.dropped_files.is_empty() {                for file in &i.raw.dropped_files {
+            if !i.raw.dropped_files.is_empty() {
+                for file in &i.raw.dropped_files {
                     if let Some(path) = &file.path {
                         tracing::info!("File dropped: {:?}", path);
 
                         // Open the dropped file in a new tab
                         match self.open_file(path.clone(), None) {
                             Ok(_) => {
-                                let msg = format!("{}: {}", t::file_opened_success(), path.display());
-                                self.status_bar.set_message(
-                                    msg,
-                                    StatusLevel::Success,
-                                );
+                                let msg =
+                                    format!("{}: {}", t::file_opened_success(), path.display());
+                                self.status_bar.set_message(msg, StatusLevel::Success);
                             }
                             Err(e) => {
                                 let msg = format!("{}: {}", t::file_open_failed(), e);
-                                self.status_bar.set_message(
-                                    msg,
-                                    StatusLevel::Error,
-                                );
+                                self.status_bar.set_message(msg, StatusLevel::Error);
                             }
                         }
 
@@ -1555,8 +1639,10 @@ impl eframe::App for LoglineApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         // Open source picker dialog
-                        self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
-                        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                        self.source_picker_dialog
+                            .set_recent_files(self.config.recent_files.clone());
+                        self.source_picker_dialog
+                            .update_android_devices(self.explorer_panel.android_devices.clone());
                         self.source_picker_dialog.show_dialog();
                     }
                     TrayEvent::Settings => {
@@ -1587,14 +1673,17 @@ impl eframe::App for LoglineApp {
 
         // Handle window close button with dialog or configured behavior
         use crate::config::CloseButtonBehavior;
-        
+
         let tray_quit_requested = self
             .tray_manager
             .as_ref()
             .map(|tray| tray.is_quit_requested())
             .unwrap_or(false);
 
-        if ctx.input(|i| i.viewport().close_requested()) && !self.should_quit && !tray_quit_requested {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.should_quit
+            && !tray_quit_requested
+        {
             // Prevent the window from closing immediately
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
 
@@ -1640,7 +1729,7 @@ impl eframe::App for LoglineApp {
                     tracing::info!("User chose to exit");
                     if self.close_dialog.should_remember() {
                         self.config.window.close_button_behavior = CloseButtonBehavior::Exit;
-                        let _ = self.config.save();
+                        self.mark_config_dirty();
                     }
                     self.should_quit = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1648,8 +1737,9 @@ impl eframe::App for LoglineApp {
                 CloseDialogResult::MinimizeToTray => {
                     tracing::info!("User chose to minimize window");
                     if self.close_dialog.should_remember() {
-                        self.config.window.close_button_behavior = CloseButtonBehavior::MinimizeToTray;
-                        let _ = self.config.save();
+                        self.config.window.close_button_behavior =
+                            CloseButtonBehavior::MinimizeToTray;
+                        self.mark_config_dirty();
                     }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
@@ -1683,7 +1773,7 @@ impl eframe::App for LoglineApp {
 
         // Process background messages for all tabs
         self.tab_manager.process_all_reader_messages();
-        
+
         // Check if any tab needs to load more data (lazy loading)
         // This is triggered when user scrolls near the top of the loaded data (in normal mode)
         // or near the bottom of the loaded data (in reverse mode)
@@ -1691,37 +1781,38 @@ impl eframe::App for LoglineApp {
             let total_rows = state.buffer.len();
             let visible_range = state.main_view.get_visible_range(total_rows);
             let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
-            
+
             // In reverse mode, check if near the end instead of the start
             let check_position = if reverse_order {
                 visible_range.end
             } else {
                 visible_range.start
             };
-            
+
             if state.buffer.should_load_more(check_position) {
                 state.request_load_more();
             }
         }
-        
+
         // Apply grok parsing incrementally for each tab (only parse visible entries on-demand)
         // This avoids parsing the entire file, making format switching instant
         {
             const MAX_PARSE_PER_FRAME: usize = 100; // Increased since we're only parsing visible area
-            
+
             // Parse entries in all tabs - prioritize visible entries
             for state in self.tab_manager.states.values_mut() {
                 // Skip if this tab doesn't have a grok parser
                 let Some(ref parser) = state.grok_parser else {
                     continue;
                 };
-                
+
                 if !parser.has_active_pattern() {
                     continue;
                 }
-                
+
                 // Only log once when we start parsing (use a reduced frequency)
-                static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                static LAST_LOG: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -1729,56 +1820,63 @@ impl eframe::App for LoglineApp {
                 let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
                 if now > last + 5 {
                     LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
-                    tracing::info!("Parsing with grok_parser: pattern={:?}, pre_processor={:?}", 
-                        parser.active_pattern_name(), 
-                        parser.pre_processor());
+                    tracing::info!(
+                        "Parsing with grok_parser: pattern={:?}, pre_processor={:?}",
+                        parser.active_pattern_name(),
+                        parser.pre_processor()
+                    );
                 }
-                
+
                 let total_len = state.buffer.len();
                 if total_len == 0 {
                     continue;
                 }
-                
+
                 // Determine the display row count and index mapping
                 let (display_row_count, filtered_indices) = if state.filter_active {
-                    (state.filtered_indices.len(), Some(state.filtered_indices.as_slice()))
+                    (
+                        state.filtered_indices.len(),
+                        Some(state.filtered_indices.as_slice()),
+                    )
                 } else {
                     (total_len, None)
                 };
-                
+
                 if display_row_count == 0 {
                     continue;
                 }
-                
+
                 // Get visible range for on-demand parsing (based on displayed rows)
                 let visible_range = state.main_view.get_visible_range(display_row_count);
                 let mut parsed_count = 0;
                 let reverse_order = state.main_view.virtual_scroll.state.reverse_order;
-                
+
                 // Priority 1: Parse visible entries first
                 for display_row in visible_range.clone() {
                     if parsed_count >= MAX_PARSE_PER_FRAME {
                         break;
                     }
-                    
+
                     // Convert display_row to logical_row (considering reverse order)
                     let logical_row = if reverse_order {
-                        display_row_count.saturating_sub(1).saturating_sub(display_row)
+                        display_row_count
+                            .saturating_sub(1)
+                            .saturating_sub(display_row)
                     } else {
                         display_row
                     };
-                    
+
                     // Convert logical_row to buffer_idx (considering filtering)
                     let buffer_idx = if let Some(indices) = filtered_indices {
                         indices.get(logical_row).copied()
                     } else {
                         Some(logical_row)
                     };
-                    
+
                     let Some(buffer_idx) = buffer_idx else {
                         continue;
                     };
-                    
+
                     if let Some(entry) = state.buffer.get_mut(buffer_idx) {
                         if entry.grok_fields.is_none() {
                             // Use parser.parse_with_format() to support mixed patterns and formatting
@@ -1797,12 +1895,15 @@ impl eframe::App for LoglineApp {
                         }
                     }
                 }
-                
+
                 // Note: We no longer track grok_parse_progress for sequential parsing
                 // since we now parse on-demand based on visible area
-                
+
                 if parsed_count > 0 {
-                    tracing::trace!("Parsed {} visible entries with grok pattern this frame", parsed_count);
+                    tracing::trace!(
+                        "Parsed {} visible entries with grok pattern this frame",
+                        parsed_count
+                    );
                 }
             }
         }
@@ -1824,7 +1925,7 @@ impl eframe::App for LoglineApp {
         {
             // Show app title bar with search on macOS
             let (search_query, should_toggle_maximize) = self.app_titlebar.show(ctx);
-            
+
             if let Some(query) = search_query {
                 // Trigger search in active tab
                 if let Some(state) = self.tab_manager.get_active_state_mut() {
@@ -1836,12 +1937,10 @@ impl eframe::App for LoglineApp {
                     self.toolbar_state.search_visible = true;
                 }
             }
-            
+
             // Handle double-click to maximize/restore window
             if should_toggle_maximize {
-                let is_maximized = ctx.input(|i| {
-                    i.viewport().maximized.unwrap_or(false)
-                });
+                let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
             }
         }
@@ -1851,7 +1950,7 @@ impl eframe::App for LoglineApp {
         {
             // Render custom titlebar (handles window controls and drag)
             self.title_bar.show(ctx);
-            
+
             // Render resize handles for window resizing when decorations are disabled
             render_resize_handles(ctx);
         }
@@ -1878,21 +1977,24 @@ impl eframe::App for LoglineApp {
                     .stroke(egui::Stroke::new(1.0, border_color)),
             )
             .show(ctx, |ui| {
-            let filter_config = self.tab_manager.get_active_state_mut()
-                .map(|state| &mut state.filter.filter);
-            let (toolbar_action, filter_changed) = Toolbar::show(ui, &mut self.toolbar_state, filter_config);
-            if let Some(a) = self.handle_toolbar_action(toolbar_action) {
-                action = Some(a);
-            }
-            
-            // Update filter if changed
-            if filter_changed {
-                if let Some(state) = self.tab_manager.get_active_state_mut() {
-                    state.filter.mark_dirty();
-                    state.update_filter();
+                let filter_config = self
+                    .tab_manager
+                    .get_active_state_mut()
+                    .map(|state| &mut state.filter.filter);
+                let (toolbar_action, filter_changed) =
+                    Toolbar::show(ui, &mut self.toolbar_state, filter_config);
+                if let Some(a) = self.handle_toolbar_action(toolbar_action) {
+                    action = Some(a);
                 }
-            }
-        });
+
+                // Update filter if changed
+                if filter_changed {
+                    if let Some(state) = self.tab_manager.get_active_state_mut() {
+                        state.filter.mark_dirty();
+                        state.update_filter();
+                    }
+                }
+            });
 
         // Search bar panel
         if self.search_bar.visible {
@@ -1940,7 +2042,7 @@ impl eframe::App for LoglineApp {
         // Bottom status bar
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             // Get info from active tab
-            let (current_file, buffer_ref, reader_ref, auto_scroll, filtered_count, selected_count) = 
+            let (current_file, buffer_ref, reader_ref, auto_scroll, filtered_count, selected_count) =
                 if let Some(state) = self.tab_manager.get_active_state() {
                     (
                         Some(state.path.as_path()),
@@ -1958,9 +2060,9 @@ impl eframe::App for LoglineApp {
             let grok_info = {
                 use crate::ui::status_bar::GrokPatternInfo;
                 use crate::grok_parser::BuiltinPattern;
-                
+
                 let mut info = GrokPatternInfo::default();
-                
+
                 // Get current tab's grok state
                 if let Some(state) = self.tab_manager.get_active_state() {
                     if let Some(ref parser) = state.grok_parser {
@@ -1971,7 +2073,7 @@ impl eframe::App for LoglineApp {
                         info.current_pattern_name = None;
                     }
                 }
-                
+
                 // Available patterns come from global config
                 info.builtin_patterns = BuiltinPattern::all()
                     .iter()
@@ -1983,7 +2085,7 @@ impl eframe::App for LoglineApp {
                     .collect();
                 info
             };
-            
+
             if let Some(buffer) = buffer_ref {
                 if let Some(action) = self.status_bar.show(
                     ui,
@@ -2027,8 +2129,10 @@ impl eframe::App for LoglineApp {
                             }
                             // Update toolbar state from the newly selected tab
                             if let Some(state) = self.tab_manager.states.get(&id) {
-                                self.toolbar_state.auto_scroll = state.main_view.virtual_scroll.state.auto_scroll;
-                                self.toolbar_state.reverse_order = state.main_view.virtual_scroll.state.reverse_order;
+                                self.toolbar_state.auto_scroll =
+                                    state.main_view.virtual_scroll.state.auto_scroll;
+                                self.toolbar_state.reverse_order =
+                                    state.main_view.virtual_scroll.state.reverse_order;
                             }
                         }
                         TabBarAction::CloseTab(id) => {
@@ -2039,22 +2143,36 @@ impl eframe::App for LoglineApp {
                         }
                         TabBarAction::CloseOtherTabs(keep_id) => {
                             // Get all tab IDs that will be closed (all except keep_id)
-                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = self.tab_manager.tab_bar.tabs
+                            let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = self
+                                .tab_manager
+                                .tab_bar
+                                .tabs
                                 .iter()
                                 .filter(|tab| tab.id != keep_id)
                                 .map(|tab| tab.id)
                                 .collect();
                             // Clean up logcat readers for tabs being closed
                             self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
-                            self.tab_manager.handle_action(TabBarAction::CloseOtherTabs(keep_id), &mut self.bookmarks_store);
+                            self.tab_manager.handle_action(
+                                TabBarAction::CloseOtherTabs(keep_id),
+                                &mut self.bookmarks_store,
+                            );
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseTabsToRight(id) => {
                             // Get all tab IDs to the right that will be closed
                             let tabs_to_close: Vec<crate::ui::tab_bar::TabId> = {
-                                if let Some(index) = self.tab_manager.tab_bar.tabs.iter().position(|tab| tab.id == id) {
-                                    self.tab_manager.tab_bar.tabs
+                                if let Some(index) = self
+                                    .tab_manager
+                                    .tab_bar
+                                    .tabs
+                                    .iter()
+                                    .position(|tab| tab.id == id)
+                                {
+                                    self.tab_manager
+                                        .tab_bar
+                                        .tabs
                                         .iter()
                                         .skip(index + 1)
                                         .map(|tab| tab.id)
@@ -2065,14 +2183,20 @@ impl eframe::App for LoglineApp {
                             };
                             // Clean up logcat readers for tabs being closed
                             self.cleanup_logcat_readers_for_tabs(&tabs_to_close);
-                            self.tab_manager.handle_action(TabBarAction::CloseTabsToRight(id), &mut self.bookmarks_store);
+                            self.tab_manager.handle_action(
+                                TabBarAction::CloseTabsToRight(id),
+                                &mut self.bookmarks_store,
+                            );
                             self.tab_manager.sync_split_with_tab_bar();
                             self.toolbar_state.split_view_active = self.tab_manager.is_split();
                         }
                         TabBarAction::CloseAllTabs => {
                             // Clean up all logcat readers before closing tabs
                             self.cleanup_all_logcat_readers();
-                            self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
+                            self.tab_manager.handle_action(
+                                TabBarAction::CloseAllTabs,
+                                &mut self.bookmarks_store,
+                            );
                             self.toolbar_state.split_view_active = false;
                         }
                         TabBarAction::ReorderTabs(from, to) => {
@@ -2092,16 +2216,25 @@ impl eframe::App for LoglineApp {
         egui::SidePanel::left("activity_bar")
             .exact_width(48.0)
             .resizable(false)
-            .frame(egui::Frame::new()
-                .fill(ctx.style().visuals.extreme_bg_color)
-                .inner_margin(egui::Margin::same(0))
+            .frame(
+                egui::Frame::new()
+                    .fill(ctx.style().visuals.extreme_bg_color)
+                    .inner_margin(egui::Margin::same(0)),
             )
             .show(ctx, |ui| {
                 // Draw subtle right border
                 let rect = ui.max_rect();
                 ui.painter().line_segment(
                     [rect.right_top(), rect.right_bottom()],
-                    egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color.linear_multiply(0.3)),
+                    egui::Stroke::new(
+                        1.0,
+                        ui.visuals()
+                            .widgets
+                            .noninteractive
+                            .bg_stroke
+                            .color
+                            .linear_multiply(0.3),
+                    ),
                 );
 
                 // Update server status in activity bar
@@ -2114,7 +2247,7 @@ impl eframe::App for LoglineApp {
                     .iter()
                     .filter(|s| s.status == crate::remote_server::ConnectionStatus::Online)
                     .count();
-                
+
                 // Update MCP server status
                 self.activity_bar.mcp_running = self.mcp_server.is_some();
                 self.activity_bar.mcp_port = self.settings_panel.mcp_port_number();
@@ -2134,7 +2267,7 @@ impl eframe::App for LoglineApp {
                             self.remote_server.stop();
                             self.config.remote_server.enabled = false;
                             self.settings_panel.enable_remote_service = false;
-                            let _ = self.config.save();
+                            self.mark_config_dirty();
                             self.status_bar
                                 .set_message(t::remote_server_stopped(), StatusLevel::Info);
                         } else {
@@ -2146,19 +2279,13 @@ impl eframe::App for LoglineApp {
                                 Ok(()) => {
                                     self.config.remote_server.enabled = true;
                                     self.settings_panel.enable_remote_service = true;
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                     let msg = format!("{}: {}", t::server_started(), port);
-                                    self.status_bar.set_message(
-                                        msg,
-                                        StatusLevel::Success,
-                                    );
+                                    self.status_bar.set_message(msg, StatusLevel::Success);
                                 }
                                 Err(e) => {
                                     let msg = format!("{}: {}", t::server_start_failed(), e);
-                                    self.status_bar.set_message(
-                                        msg,
-                                        StatusLevel::Error,
-                                    );
+                                    self.status_bar.set_message(msg, StatusLevel::Error);
                                 }
                             }
                         }
@@ -2169,14 +2296,14 @@ impl eframe::App for LoglineApp {
                             self.stop_mcp_server();
                             self.config.mcp.enabled = false;
                             self.settings_panel.mcp_enabled = false;
-                            let _ = self.config.save();
+                            self.mark_config_dirty();
                         } else {
                             // Start MCP server
                             self.start_mcp_server();
                             if self.mcp_server.is_some() {
                                 self.config.mcp.enabled = true;
                                 self.settings_panel.mcp_enabled = true;
-                                let _ = self.config.save();
+                                self.mark_config_dirty();
                             }
                         }
                     }
@@ -2308,32 +2435,20 @@ impl eframe::App for LoglineApp {
                                 ExplorerAction::RemoveFromRecent(path) => {
                                     self.explorer_panel.local_files.retain(|p| p != &path);
                                     self.config.recent_files.retain(|p| p != &path);
-                                    if let Err(e) = self.config.save() {
-                                        self.status_bar.set_message(
-                                            format!("{}: {}", t::config_save_failed(), e),
-                                            StatusLevel::Error,
-                                        );
-                                    } else {
-                                        self.status_bar.set_message(
-                                            t::removed_from_recent_files().to_string(),
-                                            StatusLevel::Info,
-                                        );
-                                    }
+                                    self.mark_config_dirty();
+                                    self.status_bar.set_message(
+                                        t::removed_from_recent_files().to_string(),
+                                        StatusLevel::Info,
+                                    );
                                 }
                                 ExplorerAction::ClearRecentFiles => {
                                     self.explorer_panel.local_files.clear();
                                     self.config.recent_files.clear();
-                                    if let Err(e) = self.config.save() {
-                                        self.status_bar.set_message(
-                                            format!("{}: {}", t::config_save_failed(), e),
-                                            StatusLevel::Error,
-                                        );
-                                    } else {
-                                        self.status_bar.set_message(
-                                            t::recent_files_cleared().to_string(),
-                                            StatusLevel::Info,
-                                        );
-                                    }
+                                    self.mark_config_dirty();
+                                    self.status_bar.set_message(
+                                        t::recent_files_cleared().to_string(),
+                                        StatusLevel::Info,
+                                    );
                                 }
                                 ExplorerAction::OpenAndroidLogcat(device) => {
                                     if let Err(e) = self.open_android_logcat(device.clone()) {
@@ -2397,43 +2512,39 @@ impl eframe::App for LoglineApp {
                                     // Save config
                                     self.grok_panel.save_to_config(&mut self.config.grok);
                                     self.config.grok.custom_patterns = self.grok_parser.export_custom_patterns();
-                                    if let Err(e) = self.config.save() {
-                                        tracing::error!("Failed to save config: {}", e);
-                                    }
+                                    self.mark_config_dirty();
                                 }
                                 GrokPanelAction::ConfigChanged => {
                                     // Config changed, save
                                     self.grok_panel.save_to_config(&mut self.config.grok);
                                     self.config.grok.custom_patterns = self.grok_parser.export_custom_patterns();
-                                    if let Err(e) = self.config.save() {
-                                        tracing::error!("Failed to save config: {}", e);
-                                    }
+                                    self.mark_config_dirty();
                                 }
                                 GrokPanelAction::FilePatternChanged { path, config } => {
                                     tracing::info!("FilePatternChanged received for path: {:?}", path);
                                     tracing::info!("FilePatternChanged config: {:?}", config);
-                                    
+
                                     // Save per-file grok config
                                     self.config.set_file_grok_config(path.clone(), config.clone());
-                                    
+
                                     // Update the tab state with the parser that was configured in grok_panel
                                     let state_found = self.tab_manager.get_state_by_path_mut(&path).is_some();
                                     tracing::info!("Tab state found for path: {}", state_found);
-                                    
+
                                     if let Some(state) = self.tab_manager.get_state_by_path_mut(&path) {
                                         // Create a new parser for this tab with the same configuration
                                         if let Some(ref config) = config {
                                             tracing::info!("Config enabled: {}, pattern_type: {}", config.enabled, config.pattern_type);
                                             if config.enabled {
                                                 use crate::grok_parser::GrokParser;
-                                                
+
                                                 let mut tab_parser = GrokParser::new();
                                                 // Import custom patterns from global config
                                                 tab_parser.import_custom_patterns(self.config.grok.custom_patterns.clone());
                                                 for (name, pat) in &self.config.grok.custom_definitions {
                                                     tab_parser.add_pattern_definition(name, pat);
                                                 }
-                                                
+
                                                 // Set the pattern based on config type
                                                 let pattern_set = match config.pattern_type.as_str() {
                                                     "inline" => {
@@ -2465,7 +2576,7 @@ impl eframe::App for LoglineApp {
                                                         false
                                                     }
                                                 };
-                                                
+
                                                 if pattern_set {
                                                     tracing::info!("Tab parser configured successfully for path: {:?}", path);
                                                     state.grok_parser = Some(tab_parser);
@@ -2474,7 +2585,7 @@ impl eframe::App for LoglineApp {
                                                 }
                                             }
                                         }
-                                        
+
                                         state.grok_config = config;
                                         state.grok_parse_progress = 0;
                                         // Clear existing grok fields to reparse
@@ -2482,10 +2593,8 @@ impl eframe::App for LoglineApp {
                                             entry.clear_grok_fields();
                                         }
                                     }
-                                    
-                                    if let Err(e) = self.config.save() {
-                                        tracing::error!("Failed to save config: {}", e);
-                                    }
+
+                                    self.mark_config_dirty();
                                 }
                                 GrokPanelAction::RequestSampleLines => {
                                     // Get sample lines from current tab
@@ -2591,12 +2700,12 @@ impl eframe::App for LoglineApp {
                                         ThemeMode::Light
                                     });
                                     action = Some(AppAction::UpdateTheme);
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                 }
                                 SettingsAction::PortChanged => {
                                     // Save the port change to config
                                     self.config.remote_server.port = self.settings_panel.port();
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                     // Port change will take effect on next server restart
                                     self.status_bar.set_message(
                                         t::port_change_requires_restart(),
@@ -2606,7 +2715,7 @@ impl eframe::App for LoglineApp {
                                 SettingsAction::RemoteServiceEnabledChanged => {
                                     self.config.remote_server.enabled =
                                         self.settings_panel.enable_remote_service;
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
 
                                     // Start or stop remote server based on enabled state
                                     if self.settings_panel.enable_remote_service {
@@ -2629,7 +2738,7 @@ impl eframe::App for LoglineApp {
                                                     );
                                                     self.config.remote_server.enabled = false;
                                                     self.settings_panel.enable_remote_service = false;
-                                                    let _ = self.config.save();
+                                                    self.mark_config_dirty();
                                                 }
                                             }
                                         }
@@ -2644,17 +2753,17 @@ impl eframe::App for LoglineApp {
                                 SettingsAction::LanguageChanged(lang) => {
                                     set_language(lang);
                                     self.config.language = lang;
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                 }
                                 SettingsAction::DisplayConfigChanged => {
                                     self.display_config =
                                         self.settings_panel.display_config.clone();
                                     self.config.display = self.display_config.clone();
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                 }
                                 SettingsAction::McpEnabledChanged(enabled) => {
                                     self.config.mcp.enabled = enabled;
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
 
                                     if enabled {
                                         // Start MCP server
@@ -2666,7 +2775,7 @@ impl eframe::App for LoglineApp {
                                 }
                                 SettingsAction::McpPortChanged => {
                                     self.config.mcp.port = self.settings_panel.mcp_port_number();
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                     self.status_bar.set_message(
                                         t::mcp_port_change_requires_restart(),
                                         StatusLevel::Info,
@@ -2674,7 +2783,7 @@ impl eframe::App for LoglineApp {
                                 }
                                 SettingsAction::CloseButtonBehaviorChanged(behavior) => {
                                     self.config.window.close_button_behavior = behavior;
-                                    let _ = self.config.save();
+                                    self.mark_config_dirty();
                                     self.status_bar.set_message(
                                         t::settings_saved(),
                                         StatusLevel::Info,
@@ -2701,7 +2810,7 @@ impl eframe::App for LoglineApp {
             if self.tab_manager.is_split() {
                 // Split view mode - show two panes
                 let (left_rect, right_rect_opt, split_action) = self.tab_manager.split_view.show(ui);
-                
+
                 // Handle split action
                 if split_action != crate::ui::split_view::SplitAction::None {
                     self.tab_manager.handle_split_action(split_action);
@@ -2848,13 +2957,13 @@ impl eframe::App for LoglineApp {
                         .show(ui, |ui| {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(40.0);
-                                
+
                                 // Main title
                                 ui.heading(RichText::new(t::welcome_title()).size(32.0).strong());
                                 ui.add_space(8.0);
                                 ui.label(RichText::new(t::no_open_tabs()).size(15.0).weak());
                                 ui.add_space(30.0);
-                                
+
                                 // Open file button
                                 let button = egui::Button::new(RichText::new(t::open_file_button()).size(16.0))
                                     .min_size(egui::vec2(180.0, 40.0));
@@ -2863,9 +2972,9 @@ impl eframe::App for LoglineApp {
                                     self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
                                     self.source_picker_dialog.show_dialog();
                                 }
-                                
+
                                 ui.add_space(40.0);
-                                
+
                                 // Hints section - use horizontal layout with equal height panels
                                 ui.horizontal_top(|ui| {
                                     // Calculate available width for centering
@@ -2874,9 +2983,9 @@ impl eframe::App for LoglineApp {
                                     let spacing = 20.0;
                                     let total_content_width = panel_width * 2.0 + spacing;
                                     let left_margin = ((available_width - total_content_width) / 2.0).max(20.0);
-                                    
+
                                     ui.add_space(left_margin);
-                                    
+
                                     // Keyboard shortcuts panel
                                     ui.vertical(|ui| {
                                         ui.group(|ui| {
@@ -2885,7 +2994,7 @@ impl eframe::App for LoglineApp {
                                                 ui.add_space(12.0);
                                                 ui.label(RichText::new(t::keyboard_shortcuts_title()).strong().size(16.0));
                                                 ui.add_space(16.0);
-                                                
+
                                                 // Shortcuts list with consistent spacing
                                                 let shortcuts = [
                                                     t::shortcut_open_file(),
@@ -2896,19 +3005,19 @@ impl eframe::App for LoglineApp {
                                                     t::shortcut_bookmark(),
                                                     t::shortcut_auto_scroll(),
                                                 ];
-                                                
+
                                                 for shortcut in shortcuts {
                                                     ui.label(RichText::new(shortcut).size(14.0));
                                                     ui.add_space(8.0);
                                                 }
-                                                
+
                                                 ui.add_space(4.0);
                                             });
                                         });
                                     });
-                                    
+
                                     ui.add_space(spacing);
-                                    
+
                                     // Agent usage panel
                                     ui.vertical(|ui| {
                                         ui.group(|ui| {
@@ -2917,15 +3026,15 @@ impl eframe::App for LoglineApp {
                                                 ui.add_space(12.0);
                                                 ui.label(RichText::new(t::agent_usage_title()).strong().size(16.0));
                                                 ui.add_space(16.0);
-                                                
+
                                                 // Show local IP addresses if server is running
                                                 if self.remote_server.is_running() {
                                                     ui.label(RichText::new(t::local_network_addresses()).size(14.0).strong());
                                                     ui.add_space(6.0);
-                                                    
+
                                                     let local_ips = crate::remote_server::get_local_ip_addresses();
                                                     let port = self.remote_server.port();
-                                                    
+
                                                     if local_ips.is_empty() {
                                                         ui.label(RichText::new(format!("  127.0.0.1:{}", port)).size(13.0).monospace());
                                                     } else {
@@ -2935,7 +3044,7 @@ impl eframe::App for LoglineApp {
                                                     }
                                                     ui.add_space(12.0);
                                                 }
-                                                
+
                                                 ui.label(RichText::new(t::agent_install_command()).size(14.0));
                                                 ui.add_space(6.0);
                                                 egui::ScrollArea::horizontal()
@@ -2944,7 +3053,7 @@ impl eframe::App for LoglineApp {
                                                     .show(ui, |ui| {
                                                         ui.code("cargo install --git https://github.com/zibo-chen/logline-agent");
                                                     });
-                                                
+
                                                 ui.add_space(12.0);
                                                 ui.label(RichText::new(t::agent_basic_usage()).size(14.0));
                                                 ui.add_space(6.0);
@@ -2958,7 +3067,7 @@ impl eframe::App for LoglineApp {
                                                             ui.code("  --file \"/var/log/app.log\"");
                                                         });
                                                     });
-                                                
+
                                                 ui.add_space(12.0);
                                                 ui.label(RichText::new(t::agent_server_address()).weak().size(13.0));
                                                 ui.add_space(6.0);
@@ -2968,7 +3077,7 @@ impl eframe::App for LoglineApp {
                                         });
                                     });
                                 });
-                                
+
                                 ui.add_space(40.0);
                             });
                         });
@@ -2982,12 +3091,15 @@ impl eframe::App for LoglineApp {
         }
 
         // Source picker dialog
-        self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+        self.source_picker_dialog
+            .update_android_devices(self.explorer_panel.android_devices.clone());
         match self.source_picker_dialog.show(ctx) {
             SourcePickerAction::OpenFile(path, encoding) => {
                 if let Err(e) = self.open_file(path.clone(), encoding) {
-                    self.status_bar
-                        .set_message(format!("{}: {}", t::file_open_failed(), e), StatusLevel::Error);
+                    self.status_bar.set_message(
+                        format!("{}: {}", t::file_open_failed(), e),
+                        StatusLevel::Error,
+                    );
                 }
             }
             SourcePickerAction::OpenAndroidDevice(device) => {
@@ -3016,16 +3128,21 @@ impl eframe::App for LoglineApp {
             match action {
                 AppAction::OpenSourcePicker => {
                     // Use recent files from config
-                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
-                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
+                    self.source_picker_dialog
+                        .set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog
+                        .update_android_devices(self.explorer_panel.android_devices.clone());
                     // Show the source picker dialog
                     self.source_picker_dialog.show_dialog();
                 }
                 AppAction::OpenSourcePickerAndroid => {
                     // Open source picker with Android tab active
-                    self.source_picker_dialog.set_recent_files(self.config.recent_files.clone());
-                    self.source_picker_dialog.update_android_devices(self.explorer_panel.android_devices.clone());
-                    self.source_picker_dialog.show_dialog_tab(SourceTab::AndroidDevices);
+                    self.source_picker_dialog
+                        .set_recent_files(self.config.recent_files.clone());
+                    self.source_picker_dialog
+                        .update_android_devices(self.explorer_panel.android_devices.clone());
+                    self.source_picker_dialog
+                        .show_dialog_tab(SourceTab::AndroidDevices);
                 }
                 AppAction::UpdateTheme => {
                     let visuals = match self.config.theme {
@@ -3036,6 +3153,8 @@ impl eframe::App for LoglineApp {
                 }
             }
         }
+
+        self.flush_config_if_needed(false);
 
         // Request repaint for real-time updates only when actively viewing a file
         // Reduced repaint frequency when remote server is running but no file is open
@@ -3058,9 +3177,9 @@ impl eframe::App for LoglineApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         tracing::info!("Application exit started");
-        
+
         // Save configuration
-        let _ = self.config.save();
+        self.flush_config_if_needed(true);
 
         // Stop MCP server first (before shutting down tokio runtime)
         if let Some(mut server) = self.mcp_server.take() {
@@ -3078,7 +3197,8 @@ impl eframe::App for LoglineApp {
 
         // Close all tabs (this will stop file watchers)
         tracing::info!("Closing all tabs");
-        self.tab_manager.handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
+        self.tab_manager
+            .handle_action(TabBarAction::CloseAllTabs, &mut self.bookmarks_store);
 
         // Explicitly shutdown tokio runtime with timeout
         if let Some(runtime) = self.tokio_runtime.take() {
@@ -3092,7 +3212,7 @@ impl eframe::App for LoglineApp {
             // Give it a short time to cleanup, then continue
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        
+
         tracing::info!("Application exit completed");
     }
 }

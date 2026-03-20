@@ -429,6 +429,7 @@ impl LogFilter {
         }
 
         self.filtered_indices.clear();
+        let search_regex = self.search.config.build_regex();
 
         // Build exclude regexes from simple patterns (backward compatibility)
         let exclude_regexes: Vec<Regex> = self
@@ -484,10 +485,12 @@ impl LogFilter {
 
             // Search filter (if active)
             if self.search.is_active() {
-                if let Some(regex) = self.search.config.build_regex() {
-                    if !regex.is_match(&entry.content) {
-                        continue;
-                    }
+                let Some(regex) = search_regex.as_ref() else {
+                    continue;
+                };
+
+                if !regex.is_match(&entry.content) {
+                    continue;
                 }
             }
 

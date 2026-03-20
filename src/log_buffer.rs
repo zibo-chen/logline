@@ -4,6 +4,38 @@ use crate::log_entry::{LogEntry, LogLevel};
 use std::collections::VecDeque;
 use std::ops::Range;
 
+pub enum LogBufferIter<'a> {
+    Main(std::collections::vec_deque::Iter<'a, LogEntry>),
+    Shadow(std::collections::vec_deque::Iter<'a, LogEntry>),
+}
+
+impl<'a> Iterator for LogBufferIter<'a> {
+    type Item = &'a LogEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Main(iter) => iter.next(),
+            Self::Shadow(iter) => iter.next(),
+        }
+    }
+}
+
+pub enum LogBufferIterMut<'a> {
+    Main(std::collections::vec_deque::IterMut<'a, LogEntry>),
+    Shadow(std::collections::vec_deque::IterMut<'a, LogEntry>),
+}
+
+impl<'a> Iterator for LogBufferIterMut<'a> {
+    type Item = &'a mut LogEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Main(iter) => iter.next(),
+            Self::Shadow(iter) => iter.next(),
+        }
+    }
+}
+
 /// Configuration for the log buffer
 #[derive(Debug, Clone)]
 pub struct LogBufferConfig {
@@ -265,20 +297,20 @@ impl LogBuffer {
     }
 
     /// Iterate over all entries
-    pub fn iter(&self) -> impl Iterator<Item = &LogEntry> {
+    pub fn iter(&self) -> LogBufferIter<'_> {
         if self.using_shadow && self.entries.is_empty() {
-            Box::new(self.shadow_entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
+            LogBufferIter::Shadow(self.shadow_entries.iter())
         } else {
-            Box::new(self.entries.iter()) as Box<dyn Iterator<Item = &LogEntry>>
+            LogBufferIter::Main(self.entries.iter())
         }
     }
 
     /// Iterate over all entries mutably
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut LogEntry> {
+    pub fn iter_mut(&mut self) -> LogBufferIterMut<'_> {
         if self.using_shadow && self.entries.is_empty() {
-            Box::new(self.shadow_entries.iter_mut()) as Box<dyn Iterator<Item = &mut LogEntry>>
+            LogBufferIterMut::Shadow(self.shadow_entries.iter_mut())
         } else {
-            Box::new(self.entries.iter_mut()) as Box<dyn Iterator<Item = &mut LogEntry>>
+            LogBufferIterMut::Main(self.entries.iter_mut())
         }
     }
 
