@@ -1,4 +1,11 @@
 fn main() {
+    let build_version = std::env::var("LOGLINE_BUILD_VERSION")
+        .ok()
+        .or_else(github_ref_version)
+        .or_else(git_describe_version)
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()));
+    println!("cargo:rustc-env=LOGLINE_BUILD_VERSION={build_version}");
+
     #[cfg(target_os = "windows")]
     {
         let ico_path = std::path::Path::new("res/icon.ico");
@@ -76,4 +83,33 @@ fn generate_ico_from_png(
 
     println!("cargo:warning=Generated res/icon.ico from res/icon.png ({width}x{height})");
     Ok(())
+}
+
+fn github_ref_version() -> Option<String> {
+    let ref_name = std::env::var("GITHUB_REF_NAME").ok()?;
+    let version = ref_name.trim_start_matches('v').trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+fn git_describe_version() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["describe", "--tags", "--exact-match"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim().trim_start_matches('v').to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
 }

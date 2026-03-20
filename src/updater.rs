@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CURRENT_VERSION: &str = env!("LOGLINE_BUILD_VERSION");
 pub const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 const REPO_OWNER: &str = "zibo-chen";
@@ -73,6 +73,14 @@ pub fn launch_installer(path: &Path) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         Command::new(path)
+            .args([
+                "/SP-",
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+                "/FORCECLOSEAPPLICATIONS",
+            ])
             .spawn()
             .with_context(|| format!("Failed to launch installer: {}", path.display()))?;
         return Ok(());
