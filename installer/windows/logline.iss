@@ -37,7 +37,6 @@ UsePreviousLanguage=yes
 DisableDirPage=auto
 DisableProgramGroupPage=yes
 CloseApplications=yes
-ForceCloseApplications=yes
 RestartApplications=no
 ChangesAssociations=yes
 MinVersion=10.0
