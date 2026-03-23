@@ -597,6 +597,13 @@ impl MainView {
             (response, total_rows)
         });
 
+        // Make the log view a keyboard focus target so platform copy shortcuts
+        // are routed to the currently interacted log pane.
+        if response.inner.0.clicked() || response.inner.0.drag_started() {
+            response.inner.0.request_focus();
+        }
+        self.has_focus = response.inner.0.has_focus();
+
         // In reverse mode, detect if user scrolled away from top to disable auto-scroll
         // In normal mode, stick_to_bottom handles this automatically
         if self.virtual_scroll.state.reverse_order && self.virtual_scroll.state.auto_scroll {

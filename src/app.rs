@@ -1411,6 +1411,12 @@ impl LoglineApp {
 
     /// Handle keyboard shortcuts
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<AppAction> {
+        let native_copy_requested = ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Copy))
+        });
+
         // Check for shortcuts using ctx.input_mut
         if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.open_file)) {
             return Some(AppAction::OpenSourcePicker);
@@ -1494,7 +1500,7 @@ impl LoglineApp {
             return None;
         }
 
-        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.copy)) {
+        if ctx.input_mut(|i| i.consume_shortcut(&self.shortcuts.copy)) || native_copy_requested {
             if let Some(state) = self.tab_manager.get_active_state() {
                 let filtered = if state.filter_active {
                     Some(state.filtered_indices.as_slice())
