@@ -1,6 +1,6 @@
 [package]
 name = "logline"
-version = "1.5.1"
+version = "1.5.6"
 edition = "2021"
 description = "A high-performance real-time log viewer"
 authors = ["zibo chen <qw.54@163.com>"]
@@ -53,7 +53,11 @@ dirs = "5.0"
 
 # File dialog
 rfd = "0.17"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
 
 # MCP (Model Context Protocol)
 rmcp = { version = "0.12", features = [

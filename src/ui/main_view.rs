@@ -532,6 +532,9 @@ impl MainView {
                             clicked_row
                         };
 
+                        // Disable auto-scroll so stick_to_bottom doesn't fight drag selection
+                        self.virtual_scroll.state.auto_scroll = false;
+
                         self.selection_range = Some(SelectionRange {
                             start_row: logical_row,
                             end_row: logical_row,
@@ -596,6 +599,39 @@ impl MainView {
 
             (response, total_rows)
         });
+
+        // Auto-scroll while dragging selection beyond viewport edges
+        let is_selection_dragging = self.selection_range.map(|s| s.is_dragging).unwrap_or(false);
+        if is_selection_dragging {
+            if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
+                let viewport = response.inner_rect;
+                let scroll_margin = row_height * 1.5; // zone near edge that triggers scrolling
+                let max_scroll_speed = row_height * 12.0; // max pixels per frame
+                let content_height = total_rows as f32 * row_height;
+                let max_offset = (content_height - viewport.height()).max(0.0);
+
+                let scroll_delta = if pointer_pos.y < viewport.min.y + scroll_margin {
+                    // Pointer above or near top edge — scroll up
+                    let distance = (viewport.min.y + scroll_margin) - pointer_pos.y;
+                    let speed = (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
+                    -speed
+                } else if pointer_pos.y > viewport.max.y - scroll_margin {
+                    // Pointer below or near bottom edge — scroll down
+                    let distance = pointer_pos.y - (viewport.max.y - scroll_margin);
+                    let speed = (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
+                    speed
+                } else {
+                    0.0
+                };
+
+                if scroll_delta != 0.0 {
+                    let mut state = response.state.clone();
+                    state.offset.y = (state.offset.y + scroll_delta).clamp(0.0, max_offset);
+                    state.store(ui.ctx(), response.id);
+                    ui.ctx().request_repaint(); // keep scrolling while dragging
+                }
+            }
+        }
 
         // Make the log view a keyboard focus target so platform copy shortcuts
         // are routed to the currently interacted log pane.
