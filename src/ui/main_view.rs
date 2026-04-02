@@ -600,36 +600,40 @@ impl MainView {
             (response, total_rows)
         });
 
-        // Auto-scroll while dragging selection beyond viewport edges
+        // Auto-scroll while dragging selection: edge proximity + mouse wheel
         let is_selection_dragging = self.selection_range.map(|s| s.is_dragging).unwrap_or(false);
         if is_selection_dragging {
+            let viewport = response.inner_rect;
+            let content_height = total_rows as f32 * row_height;
+            let max_offset = (content_height - viewport.height()).max(0.0);
+
+            let mut scroll_delta = 0.0;
+
+            // Edge auto-scroll when pointer is near/beyond viewport boundary
             if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
-                let viewport = response.inner_rect;
-                let scroll_margin = row_height * 1.5; // zone near edge that triggers scrolling
-                let max_scroll_speed = row_height * 12.0; // max pixels per frame
-                let content_height = total_rows as f32 * row_height;
-                let max_offset = (content_height - viewport.height()).max(0.0);
+                let scroll_margin = row_height * 1.5;
+                let max_scroll_speed = row_height * 12.0;
 
-                let scroll_delta = if pointer_pos.y < viewport.min.y + scroll_margin {
-                    // Pointer above or near top edge — scroll up
+                if pointer_pos.y < viewport.min.y + scroll_margin {
                     let distance = (viewport.min.y + scroll_margin) - pointer_pos.y;
-                    let speed = (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
-                    -speed
+                    scroll_delta -= (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
                 } else if pointer_pos.y > viewport.max.y - scroll_margin {
-                    // Pointer below or near bottom edge — scroll down
                     let distance = pointer_pos.y - (viewport.max.y - scroll_margin);
-                    let speed = (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
-                    speed
-                } else {
-                    0.0
-                };
-
-                if scroll_delta != 0.0 {
-                    let mut state = response.state.clone();
-                    state.offset.y = (state.offset.y + scroll_delta).clamp(0.0, max_offset);
-                    state.store(ui.ctx(), response.id);
-                    ui.ctx().request_repaint(); // keep scrolling while dragging
+                    scroll_delta += (distance / scroll_margin).clamp(0.0, 1.0) * max_scroll_speed;
                 }
+            }
+
+            // Mouse wheel scroll during drag selection
+            let wheel_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+            if wheel_delta != 0.0 {
+                scroll_delta -= wheel_delta; // negative because scroll_delta is offset-based
+            }
+
+            if scroll_delta != 0.0 {
+                let mut state = response.state.clone();
+                state.offset.y = (state.offset.y + scroll_delta).clamp(0.0, max_offset);
+                state.store(ui.ctx(), response.id);
+                ui.ctx().request_repaint();
             }
         }
 
