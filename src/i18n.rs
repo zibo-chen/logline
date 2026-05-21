@@ -846,6 +846,13 @@ impl Translations {
         }
     }
 
+    pub fn search_pending() -> &'static str {
+        match current_language() {
+            Language::English => "Press Search or Enter to update results",
+            Language::Chinese => "点击搜索按钮或回车开始搜索",
+        }
+    }
+
     pub fn level_filter() -> &'static str {
         match current_language() {
             Language::English => "Level:",

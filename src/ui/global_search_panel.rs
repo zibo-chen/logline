@@ -6,6 +6,9 @@ use crate::log_entry::LogLevel;
 use eframe::egui::{self, Color32, RichText, ScrollArea, TextEdit, Ui};
 use regex::Regex;
 
+const SEARCH_RESULT_PREVIEW_CHARS: usize = 200;
+const AUTO_SEARCH_MAX_LINES: usize = 5_000;
+
 /// Search result item
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
@@ -13,12 +16,10 @@ pub struct SearchResultItem {
     pub line_number: usize,
     /// Buffer index
     pub buffer_index: usize,
-    /// Line content
+    /// Truncated preview content
     pub content: String,
     /// Log level if detected
     pub level: Option<LogLevel>,
-    /// Match positions (start, end) in content
-    pub match_positions: Vec<(usize, usize)>,
     /// Whether this line is bookmarked
     pub bookmarked: bool,
 }
@@ -122,25 +123,24 @@ impl GlobalSearchPanel {
                 continue;
             }
 
-            // Search match
-            let matches: Vec<(usize, usize)> = regex
-                .find_iter(&entry.content)
-                .map(|m| (m.start(), m.end()))
-                .collect();
-
-            if !matches.is_empty() {
+            if regex.is_match(&entry.content) {
                 self.results.push(SearchResultItem {
                     line_number: entry.line_number,
                     buffer_index: idx,
-                    content: entry.content.clone(),
+                    content: truncate_string(&entry.content, SEARCH_RESULT_PREVIEW_CHARS),
                     level: entry.level,
-                    match_positions: matches,
                     bookmarked: entry.bookmarked,
                 });
             }
         }
 
         self.dirty = false;
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.results.clear();
+        self.selected_index = None;
     }
 
     /// Build regex from search config
@@ -198,13 +198,11 @@ impl GlobalSearchPanel {
                     .desired_width(ui.available_width()),
             );
 
-            if response.changed() {
-                self.dirty = true;
-            }
+            let search_requested =
+                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-            // Press Enter to search
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                self.search(buffer);
+            if response.changed() {
+                self.mark_dirty();
             }
 
             ui.add_space(4.0);
@@ -217,7 +215,7 @@ impl GlobalSearchPanel {
                     .clicked()
                 {
                     self.case_sensitive = !self.case_sensitive;
-                    self.dirty = true;
+                    self.mark_dirty();
                 }
 
                 if ui
@@ -226,7 +224,7 @@ impl GlobalSearchPanel {
                     .clicked()
                 {
                     self.use_regex = !self.use_regex;
-                    self.dirty = true;
+                    self.mark_dirty();
                 }
 
                 if ui
@@ -235,7 +233,7 @@ impl GlobalSearchPanel {
                     .clicked()
                 {
                     self.whole_word = !self.whole_word;
-                    self.dirty = true;
+                    self.mark_dirty();
                 }
 
                 if ui
@@ -244,7 +242,7 @@ impl GlobalSearchPanel {
                     .clicked()
                 {
                     self.bookmarks_only = !self.bookmarks_only;
-                    self.dirty = true;
+                    self.mark_dirty();
                 }
             });
 
@@ -283,14 +281,14 @@ impl GlobalSearchPanel {
                                 } else {
                                     self.level_filter.push(level);
                                 }
-                                self.dirty = true;
+                                self.mark_dirty();
                             }
                         }
 
                         ui.separator();
                         if ui.button("清除筛选").clicked() {
                             self.level_filter.clear();
-                            self.dirty = true;
+                            self.mark_dirty();
                         }
                     });
             });
@@ -299,10 +297,13 @@ impl GlobalSearchPanel {
 
             // Search button
             ui.horizontal(|ui| {
+                let should_auto_search = self.dirty && buffer.len() <= AUTO_SEARCH_MAX_LINES;
+
                 if ui
                     .button(format!("🔍 {}", Translations::search()))
                     .clicked()
-                    || self.dirty
+                    || search_requested
+                    || should_auto_search
                 {
                     self.search(buffer);
                 }
@@ -320,11 +321,16 @@ impl GlobalSearchPanel {
             ui.separator();
             ui.add_space(4.0);
 
+            if self.dirty && !self.query.is_empty() && buffer.len() > AUTO_SEARCH_MAX_LINES {
+                ui.label(RichText::new(Translations::search_pending()).color(Color32::GRAY));
+                ui.add_space(4.0);
+            }
+
             // Results list
             if self.results.is_empty() {
-                if !self.query.is_empty() {
+                if !self.query.is_empty() && !self.dirty {
                     ui.label(RichText::new(Translations::global_no_results()).color(Color32::GRAY));
-                } else {
+                } else if self.query.is_empty() {
                     ui.label(
                         RichText::new(Translations::enter_search_query()).color(Color32::GRAY),
                     );
@@ -400,7 +406,7 @@ impl GlobalSearchPanel {
                     });
 
                     // Content with highlighted matches
-                    let content = self.highlight_content(&result.content, &result.match_positions);
+                    let content = self.highlight_content(&result.content);
                     ui.add(egui::Label::new(content).wrap());
                 });
             })
@@ -409,13 +415,7 @@ impl GlobalSearchPanel {
     }
 
     /// Highlight matched text in content
-    fn highlight_content(&self, content: &str, matches: &[(usize, usize)]) -> RichText {
-        let truncated = truncate_string(content, 200);
-
-        if matches.is_empty() {
-            return RichText::new(truncated);
-        }
-
+    fn highlight_content(&self, content: &str) -> RichText {
         // Use theme-aware text color for search results
         let text_color = if self.dark_theme {
             Color32::from_rgb(212, 212, 212) // Light text for dark theme
@@ -423,7 +423,7 @@ impl GlobalSearchPanel {
             Color32::from_rgb(36, 36, 36) // Dark text for light theme
         };
 
-        RichText::new(truncated).color(text_color)
+        RichText::new(content).color(text_color)
     }
 }
 
@@ -448,9 +448,42 @@ fn level_colors(level: LogLevel) -> (Color32, Color32) {
 
 /// Truncate string to max length
 fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
+    if let Some((cutoff, _)) = s.char_indices().nth(max_len) {
+        format!("{}...", &s[..cutoff])
     } else {
-        format!("{}...", &s[..max_len])
+        s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_string, GlobalSearchPanel, SEARCH_RESULT_PREVIEW_CHARS};
+    use crate::log_buffer::LogBuffer;
+    use crate::log_entry::LogEntry;
+
+    #[test]
+    fn truncate_string_preserves_utf8_boundaries() {
+        let source = "你".repeat(250);
+
+        let truncated = truncate_string(&source, 200);
+
+        assert!(truncated.ends_with("..."));
+        assert_eq!(truncated.chars().count(), 203);
+    }
+
+    #[test]
+    fn search_keeps_only_preview_for_long_unicode_lines() {
+        let mut buffer = LogBuffer::new();
+        let long_line = format!("错误 {}", "你".repeat(260));
+        buffer.push(LogEntry::new(1, long_line.clone(), 0));
+
+        let mut panel = GlobalSearchPanel::new();
+        panel.query = "错误".to_string();
+        panel.search(&buffer);
+
+        assert_eq!(panel.results.len(), 1);
+        assert!(panel.results[0].content.ends_with("..."));
+        assert!(panel.results[0].content.chars().count() <= SEARCH_RESULT_PREVIEW_CHARS + 3);
+        assert!(panel.results[0].content.len() < long_line.len());
     }
 }
